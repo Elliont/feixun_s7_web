@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}首次设置 · 韭菜称重{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="login-card" method="post" action="/setup">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+
+    <div class="login-brand">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v3"/><rect x="4" y="6" width="16" height="14" rx="4"/>
+          <path d="M12 13l3-3"/>
+        </svg>
+      </span>
+      <div>
+        <div class="login-title">韭菜称重</div>
+        <div class="login-sub">第一次使用，先给自己设一个账号</div>
+      </div>
+    </div>
+
+    {% if err == 1 %}<div class="form-error">用户名需 2–32 个字符</div>{% endif %}
+    {% if err == 2 %}<div class="form-error">密码至少 8 位</div>{% endif %}
+    {% if err == 3 %}<div class="form-error">两次输入的密码不一致</div>{% endif %}
+
+    <div class="field">
+      <label for="username">用户名</label>
+      <input class="input" id="username" name="username" autocomplete="username"
+             minlength="2" maxlength="32" required autofocus>
+      <div class="field-hint">创建后不可修改</div>
+    </div>
+    <div class="field">
+      <label for="password">密码（至少 8 位）</label>
+      <input class="input" id="password" name="password" type="password"
+             autocomplete="new-password" minlength="8" required>
+    </div>
+    <div class="field">
+      <label for="again">再输一次</label>
+      <input class="input" id="again" name="again" type="password"
+             autocomplete="new-password" minlength="8" required>
+    </div>
+
+    <button class="btn btn-primary btn-block" type="submit">创建并登录</button>
+  </form>
+</div>
+{% endblock %}

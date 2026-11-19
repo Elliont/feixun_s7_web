@@ -1,0 +1,185 @@
+{% extends "base.html" %}
+{% block title %}称重记录 · 韭菜称重{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">称重记录</h1>
+    <p class="page-sub">
+      共 {{ total }} 条{% if size %} · 每页 {{ size }} 条{% endif %}
+      {%- if ok %} · 已保存{% endif %}
+      {%- if imp > 0 %} · 已导入 {{ imp }} 条{% endif %}
+      {%- if imp == -1 %} · 导入失败：表头需要「时间 / 成员 / 体重kg」三列{% endif %}
+    </p>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <form class="inline-form" method="post" action="/records/import" enctype="multipart/form-data">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <label class="btn btn-ghost" style="cursor:pointer">
+        导入
+        <input type="file" name="file" accept=".csv,text/csv" style="display:none"
+               data-upload-submit>
+      </label>
+    </form>
+    <a class="btn btn-ghost" href="/api/export.csv?member={{ q.member }}&date_from={{ q.date_from }}&date_to={{ q.date_to }}">导出</a>
+    <a class="btn btn-primary" href="/records/new">+ 补录</a>
+    <a class="btn btn-danger" href="/trash">回收站{% if trash_n %} · {{ trash_n }}{% endif %}</a>
+  </div>
+</div>
+
+<!-- 条件筛选：整页提交，顺带保留每页条数与显示列 -->
+<form class="filters" method="get" action="/records">
+  <input type="hidden" name="size" value="{{ size }}">
+  {% for k in rec_cols %}<input type="hidden" name="rc" value="{{ k }}">{% endfor %}
+  <select class="select" name="member">
+    <option value="">全部成员</option>
+    {% for m in members %}
+    <option value="{{ m.id }}" {% if q.member == m.id|string %}selected{% endif %}>{{ m.name }}</option>
+    {% endfor %}
+  </select>
+  <input class="input" type="date" name="date_from" value="{{ q.date_from }}">
+  <input class="input" type="date" name="date_to" value="{{ q.date_to }}">
+  <select class="select" name="state">
+    <option value="">全部状态</option>
+    <option value="auto" {% if q.state=='auto' %}selected{% endif %}>已分配</option>
+    <option value="pending" {% if q.state=='pending' %}selected{% endif %}>待分配</option>
+    <option value="ignored" {% if q.state=='ignored' %}selected{% endif %}>已忽略</option>
+  </select>
+  <button class="btn btn-ghost" type="submit">筛选</button>
+</form>
+
+<div id="rec-wrap">
+  <div class="rec-toolbar">
+    <form class="inline-form" method="get" action="/records">
+      {% for k in rec_cols %}<input type="hidden" name="rc" value="{{ k }}">{% endfor %}
+      <input type="hidden" name="member" value="{{ q.member }}">
+      <input type="hidden" name="state" value="{{ q.state }}">
+      <input type="hidden" name="date_from" value="{{ q.date_from }}">
+      <input type="hidden" name="date_to" value="{{ q.date_to }}">
+      <label for="rs">每页</label>
+      <select class="select" id="rs" name="size" data-rec-size>
+        {% for n in size_links %}
+        <option value="{{ n }}" {% if size == n %}selected{% endif %}>{{ n }} 条</option>
+        {% endfor %}
+      </select>
+      <noscript><button class="btn btn-ghost" type="submit">应用</button></noscript>
+    </form>
+    <span class="rec-count num">共 {{ total }} 条</span>
+    <span class="spacer"></span>
+
+    {# 显示哪些列：Excel 风格的搜索 + 全选 + 复选框，确定后才生效 #}
+    <details class="col-menu" id="col-menu">
+      <summary class="chip chip-ghost">筛选</summary>
+      <form class="col-menu-body col-filter" method="get" action="/records">
+        <input type="hidden" name="size" value="{{ size }}">
+        <input type="hidden" name="member" value="{{ q.member }}">
+        <input type="hidden" name="state" value="{{ q.state }}">
+        <input type="hidden" name="date_from" value="{{ q.date_from }}">
+        <input type="hidden" name="date_to" value="{{ q.date_to }}">
+        <input class="col-search" type="search" placeholder="搜索" aria-label="搜索列名"
+               autocomplete="off">
+        <div class="col-list" role="group" aria-label="显示哪些列">
+          <label class="col-opt col-all">
+            <input type="checkbox" data-col-all{% if rec_cols|length == cols|length %} checked{% endif %}>（全选）
+          </label>
+          {% for c in cols %}
+          <label class="col-opt" data-label="{{ c.label }}">
+            <input type="checkbox" name="rc" value="{{ c.key }}"{% if c.on %} checked{% endif %}>
+            <span class="col-name">{{ c.label }}</span>
+            {% if c.unit %}<span class="col-unit">{{ c.unit }}</span>{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        <p class="col-hint" hidden>至少选一列</p>
+        <div class="col-actions">
+          <button class="btn btn-ghost btn-sm" type="button" data-col-cancel>取消</button>
+          <button class="btn btn-primary btn-sm" type="submit">确定</button>
+        </div>
+      </form>
+    </details>
+  </div>
+
+  <div id="rec-area">
+    <div class="card table-card">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>成员</th>
+            {% for c in cols if c.on %}<th>{{ c.label }}</th>{% endfor %}
+            <th>状态</th>
+            <th class="ta-r">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr class="{% if r.excluded %}row-muted{% endif %}{% if r.member_id %} row-link{% endif %}"
+              {% if r.member_id %}data-href="/m/{{ r.member_id }}/r/{{ r.id }}"{% endif %}>
+            <td class="nowrap num">{{ r.measured_at }}</td>
+            <td>
+              {% if r.member %}<span class="dot" style="--c:{{ r.member_color or '#8B94A3' }}"></span>{{ r.member }}
+              {% else %}<span class="tag tag-warn">待分配</span>{% endif %}
+            </td>
+            {% for c in cols if c.on %}
+            <td class="num">
+              {%- if c.key == 'weight' -%}<b>{{ r.weight }}</b> kg
+              {%- elif c.key == 'bfr' -%}{{ (r.bfr ~ "%") if r.has_fat else "—" }}
+              {%- elif c.key == 'bmi' -%}{{ r.bmi or "—" }}
+              {%- elif c.key == 'visceral' -%}{{ r.visceral if r.has_fat else "—" }}
+              {%- elif c.key == 'score' -%}{{ (r.score if (r.has_fat and r.score is not none) else "—") }}
+              {%- endif -%}
+            </td>
+            {% endfor %}
+            <td>
+              {% if r.excluded %}<span class="tag">已忽略</span>
+              {% elif r.state in ('auto', 'confirmed') %}<span class="tag tag-ok">已分配</span>
+              {% else %}<span class="tag tag-warn">待分配</span>{% endif %}
+            </td>
+            <td class="ta-r">
+              <span class="rec-actions">
+                <form method="post" action="/measurements/{{ r.id }}/assign" class="inline-form" data-autosubmit>
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <input type="hidden" name="back" value="/records?page={{ page }}&{{ base_qs }}">
+                  <select class="select select-sm" name="member_id">
+                    <option value="">----</option>
+                    {% for m in members %}
+                    <option value="{{ m.id }}" {% if r.member_id == m.id %}selected{% endif %}>{{ m.name }}</option>
+                    {% endfor %}
+                  </select>
+                </form>
+                <form method="post" action="/measurements/{{ r.id }}/exclude" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <input type="hidden" name="back" value="/records?page={{ page }}&{{ base_qs }}">
+                  <input type="hidden" name="value" value="{{ 0 if r.excluded else 1 }}">
+                  <button class="chip chip-xs" type="submit"
+                          data-confirm="{{ '恢复这条 ' ~ r.weight ~ 'kg 的记录？' if r.excluded else '忽略这条 ' ~ r.weight ~ 'kg 的记录？之后可在「已忽略」里找回。' }}">{{ "恢复" if r.excluded else "忽略" }}</button>
+                </form>
+                <form method="post" action="/measurements/{{ r.id }}/delete" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <input type="hidden" name="back" value="/records?page={{ page }}&{{ base_qs }}">
+                  <button class="chip chip-xs chip-danger" type="submit"
+                          data-confirm="删除这条 {{ r.weight }}kg 的记录？不可恢复。">删除</button>
+                </form>
+              </span>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="{{ rec_cols|length + 4 }}" class="empty-cell">没有符合条件的记录</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if pages > 1 %}
+    <div class="pager">
+      {% if page > 1 %}
+      <a class="chip" href="/records?page={{ page - 1 }}&{{ base_qs }}">← 上一页</a>
+      {% endif %}
+      <span class="page-info num">第 {{ page }} / {{ pages }} 页</span>
+      {% if page < pages %}
+      <a class="chip" href="/records?page={{ page + 1 }}&{{ base_qs }}">下一页 →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

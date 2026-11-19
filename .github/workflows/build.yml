@@ -1,0 +1,91 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  smoke:
+    name: 代码自检 + 启动冒烟
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: 安装依赖
+        run: pip install -r requirements.txt
+
+      - name: 语法编译
+        run: python -m compileall -q s7
+
+      - name: 启动并请求 /healthz
+        run: |
+          export S7_DATA_DIR="$RUNNER_TEMP/s7data"
+          export S7_WEB_PORT=8080
+          export S7_DEV_NOAUTH=1
+          python -m s7.web >"$RUNNER_TEMP/web.log" 2>&1 &
+          for i in $(seq 1 20); do
+            sleep 1
+            if curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              echo "healthz OK after ${i}s"
+              curl -sS -o /dev/null -w "GET / -> %{http_code}\n" http://127.0.0.1:8080/
+              exit 0
+            fi
+          done
+          echo "web 未能在 20s 内启动，日志："
+          cat "$RUNNER_TEMP/web.log"
+          exit 1
+
+  docker:
+    name: 构建并推送镜像
+    needs: smoke
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: 登录 GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成标签
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: 构建并推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64

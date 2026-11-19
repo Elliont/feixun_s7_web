@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}{{ m.name }} · 韭菜称重{% endblock %}
+
+{% block content %}
+{# 大卡：BMI / 体脂率 / 身体评分；小卡：代谢年龄 / 肌肉量 / 骨骼肌 / 内脏脂肪 / 脂肪量 / 水分率 / 去脂体重 / 蛋白质 #}
+{% set CORE_BF = ['bmi', 'bfr', 'score'] %}
+{% set CORE_NOBF = ['bmi'] %}
+{% set REST_ORDER = ['bage', 'muscle', 'smm', 'vfr', 'water', 'protein', 'fat_mass', 'lbm'] %}
+{% set core_keys = CORE_BF if comp.has_body_fat else CORE_NOBF %}
+{% set card_map = {} %}
+{% for c in cards %}{% set _ = card_map.update({c.key: c}) %}{% endfor %}
+
+
+{# 成员切换：姓名已在 tab 里，不再单独出标题 #}
+{% if member_tabs and member_tabs|length > 1 %}
+<nav class="mtabs" aria-label="切换成员">
+  {% for mm in member_tabs %}
+  <a class="mtab {{ 'is-on' if mm.id == m.id }}" href="/m/{{ mm.id }}"
+     {% if mm.id == m.id %}aria-current="page"{% endif %}>
+    <span class="dot" style="--c:{{ mm.color }}"></span>{{ mm.name }}
+  </a>
+  {% endfor %}
+</nav>
+{% endif %}
+
+{% if not latest %}
+<div class="empty">
+  <b>还没有称重数据</b>
+  光脚踩上秤，握住手柄（可选）等读数稳定后即可
+</div>
+{% else %}
+
+<!-- 主数字 + 目标环 -->
+<div class="hero">
+  <div class="hero-main">
+    <div class="hero-value num">{{ "%.1f"|format(weight) }}<span>kg</span></div>
+    <div class="hero-sub">
+      <span>{{ "男" if male else "女" }} · {{ m.age }} 岁 · {{ m.height_cm }} cm</span>
+      {% if comp.has_body_fat and comp.body_type %}<span class="hero-type">{{ comp.body_type }}</span>{% endif %}
+    </div>
+    <div class="hero-meta">
+      {{ latest.measured_at[:16].replace("T", " ") }} 称重
+      {% if delta_last is not none %}
+        · 较上次 <b class="{{ 'down' if delta_last < 0 else ('up' if delta_last > 0 else '') }} num">{{ "%+.1f"|format(delta_last) }} kg</b>
+      {% endif %}
+      {% if delta_avg is not none %}
+        · 较 7 日均值 <b class="{{ 'down' if delta_avg < 0 else ('up' if delta_avg > 0 else '') }} num">{{ "%+.1f"|format(delta_avg) }} kg</b>
+      {% endif %}
+    </div>
+
+    {% if comp.has_body_fat %}
+    {% set sc = card_map.get('score') %}{% set ba = card_map.get('bage') %}
+    <div class="hero-stats">
+      {% if ba %}
+      <div class="hero-stat lv-{{ ba.level }}">
+        <em>代谢年龄</em>
+        <span class="v"><span class="n">{{ ba.value }}</span><span class="u">岁</span></span>
+      </div>
+      {% endif %}
+      {% if sc %}
+      <div class="hero-stat lv-{{ sc.level }}">
+        <em>身体评分</em>
+        <span class="v"><span class="n">{{ sc.value }}</span><span class="u">分</span><span class="t">{{ sc.verdict }}</span></span>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+
+  {% if goal %}
+  {% set pct = (goal.progress * 100) | round(0, 'floor') | int %}
+  <div class="hero-goal">
+    <span class="ring" style="width:104px;height:104px">
+      <svg width="104" height="104" viewBox="0 0 104 104" aria-hidden="true">
+        <circle cx="52" cy="52" r="46" fill="none" stroke="#E9EDF1" stroke-width="9"/>
+        <circle cx="52" cy="52" r="46" fill="none" stroke="{{ '#15803D' if goal.done else '#00A98F' }}"
+                stroke-width="9" stroke-linecap="round"
+                stroke-dasharray="{{ '%.1f'|format(goal.progress * 289.0) }} 289"/>
+      </svg>
+      <span class="ring-label" style="font-size:18px;color:{{ '#15803D' if goal.done else '#007562' }}">
+        {{- "✓" if goal.done else pct ~ "%" -}}
+      </span>
+    </span>
+    <div class="hero-goal-text">
+      <div class="goal-target num">目标 {{ "%.1f"|format(goal.target) }} kg
+        <a class="goal-edit" href="/members/{{ m.id }}#goal">编辑</a></div>
+      {% if goal.done %}
+        <div class="ok-text">目标已达成</div>
+      {% else %}
+        <div class="goal-remain num">还差 {{ "%.1f"|format(goal.remain) }} kg</div>
+        {% if goal.eta %}<div class="goal-eta num">按当前趋势约 {{ goal.eta }} 天</div>
+        {% elif goal.eta_note %}<div class="goal-eta">{{ goal.eta_note }}</div>{% endif %}
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% if not comp.has_body_fat %}
+<div class="banner banner-warn">
+  <b>还没有测到过阻抗</b>
+  <span style="font-size:13px">光脚踩实电极、双手握住手柄，等进度条走完即可测出体成分</span>
+</div>
+{% endif %}
+
+<!-- 核心指标 -->
+<div class="section-head">
+  <h2 class="section-title">核心指标</h2>
+</div>
+<div class="core-grid">
+  {% for k in core_keys %}
+  {% set c = card_map.get(k) %}
+  {% if c %}
+  <button type="button" class="core-card lv-{{ c.level }} is-metric" data-key="{{ c.key }}"
+          data-label="{{ c.label }}" data-unit="{{ c.unit }}" data-verdict="{{ c.verdict }}"
+          aria-pressed="false">
+    <span class="m-head">
+      <span class="core-label">{{ c.label }}</span>
+      <span class="qmark" role="button" tabindex="0" data-tip="{{ c.hint }}"
+            aria-label="查看{{ c.label }}的计算方法">?</span>
+    </span>
+    <span class="core-foot">
+      <span class="core-value num">{{ c.value }}<small>{{ c.unit }}</small></span>
+      {% if c.verdict %}<span class="m-verdict">{{ c.verdict }}</span>{% endif %}
+    </span>
+  </button>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<!-- 其余指标 -->
+{% set rest = [] %}
+{% for k in REST_ORDER %}
+{% if k not in core_keys and card_map.get(k) %}
+{% set _ = rest.append(card_map.get(k)) %}
+{% endif %}
+{% endfor %}
+{% if rest %}
+<div class="section-head">
+  <h2 class="section-title">全部指标</h2>
+</div>
+<div class="metrics">
+  {% for c in rest %}
+  <button type="button" class="metric lv-{{ c.level }} is-metric" data-key="{{ c.key }}"
+          data-label="{{ c.label }}" data-unit="{{ c.unit }}" data-verdict="{{ c.verdict }}"
+          aria-pressed="false">
+    <span class="m-head">
+      <span class="metric-label">{{ c.label }}</span>
+      <span class="qmark" role="button" tabindex="0" data-tip="{{ c.hint }}"
+            aria-label="查看{{ c.label }}的计算方法">?</span>
+    </span>
+    <span class="metric-foot">
+      <span class="metric-value num">{{ c.value }}<small>{{ c.unit }}</small></span>
+      {% if c.verdict %}<span class="m-verdict">{{ c.verdict }}</span>{% endif %}
+    </span>
+  </button>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- 指标趋势：点上方任意指标卡切换，默认体重 -->
+<div class="section-head">
+  <h2 class="section-title">指标趋势</h2>
+  <a class="section-link" href="/records?member_id={{ m.id }}">所有记录 →</a>
+</div>
+<div class="card chart-card" id="trend" data-member="{{ m.id }}"
+     data-src="/m/{{ m.id }}/series.json" data-color="{{ m.color }}">
+  <div class="chart-head">
+    <div class="chart-title-wrap">
+      <span class="chart-title" id="trend-title">体重</span>
+      <span class="chart-now" id="trend-now"></span>
+      <span class="chart-verdict" id="trend-verdict"></span>
+    </div>
+    <div class="chart-range" role="group" aria-label="时间范围">
+      <button type="button" class="seg" data-days="30">30 天</button>
+      <button type="button" class="seg is-on" data-days="90">90 天</button>
+      <button type="button" class="seg" data-days="180">半年</button>
+    </div>
+  </div>
+  <div class="chart-stage" id="trend-stage">
+    <p class="chart-note" id="trend-note">加载中…</p>
+  </div>
+  <p class="chart-foot-note">点图上任意位置，可打开那一次称重记录</p>
+</div>
+
+<!-- 体重记录：分页 + 表头排序 + 按需显示列 + 每行可点；换页/换条数不刷新整页 -->
+<div class="section-head">
+  <h2 class="section-title">体重记录</h2>
+</div>
+
+<div id="rec-wrap">
+  <div class="rec-toolbar">
+    <form class="inline-form" method="get" action="/m/{{ m.id }}">
+      {% for k in rec_cols %}<input type="hidden" name="rc" value="{{ k }}">{% endfor %}
+      <input type="hidden" name="sort" value="{{ sort_key }}">
+      <input type="hidden" name="dir" value="{{ sort_dir }}">
+      <label for="rs">每页</label>
+      <select class="select" id="rs" name="rs" data-rec-size>
+        {% for s in size_links %}
+        <option value="{{ s.n }}" {% if rec_size == s.n %}selected{% endif %}>{{ s.n }} 条</option>
+        {% endfor %}
+      </select>
+      <noscript><button class="btn btn-ghost" type="submit">应用</button></noscript>
+    </form>
+    <span class="rec-count num">共 {{ rec_total }} 条</span>
+    <span class="spacer"></span>
+    <details class="col-menu" id="col-menu">
+      <summary class="chip chip-ghost">筛选</summary>
+      {# 参考 Excel 筛选：搜索 + 全选 + 复选框 + 确定/取消，选完才生效 #}
+      <form class="col-menu-body col-filter" method="get" action="/m/{{ m.id }}">
+        <input type="hidden" name="rs" value="{{ rec_size }}">
+        <input type="hidden" name="sort" value="{{ sort_key }}">
+        <input type="hidden" name="dir" value="{{ sort_dir }}">
+        <input class="col-search" type="search" placeholder="搜索" aria-label="搜索列名"
+               autocomplete="off">
+        <div class="col-list" role="group" aria-label="显示哪些列">
+          <label class="col-opt col-all">
+            <input type="checkbox" data-col-all{% if rec_cols|length == cols|length %} checked{% endif %}>（全选）
+          </label>
+          {% for c in cols %}
+          <label class="col-opt" data-label="{{ c.label }}">
+            <input type="checkbox" name="rc" value="{{ c.key }}"{% if c.on %} checked{% endif %}>
+            <span class="col-name">{{ c.label }}</span>
+            {% if c.unit %}<span class="col-unit">{{ c.unit }}</span>{% endif %}
+          </label>
+          {% endfor %}
+        </div>
+        <p class="col-hint" hidden>至少选一列</p>
+        <div class="col-actions">
+          <button class="btn btn-ghost btn-sm" type="button" data-col-cancel>取消</button>
+          <button class="btn btn-primary btn-sm" type="submit">确定</button>
+        </div>
+      </form>
+    </details>
+  </div>
+
+  <div id="rec-area">
+    <div class="card table-card">
+      <table class="table">
+        <thead>
+          <tr>
+            {% for h in sort_heads %}
+            <th><a class="th-sort" href="{{ h.url }}">{{ h.label }}<span class="sort-ind">{{ h.ind }}</span></a></th>
+            {% endfor %}
+            <th class="ta-r">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rec_rows %}
+          <tr class="row-link" data-href="/m/{{ m.id }}/r/{{ r.id }}">
+            <td class="nowrap num">{{ r.measured_at }}</td>
+            {% for c in cols if c.on %}
+            <td class="num">
+              {%- if c.key == 'weight' -%}<b>{{ "%.1f"|format(r.weight) }}</b> kg
+              {%- elif not r.has_fat and c.key not in ('bmi', 'score') -%}—
+              {%- elif c.key == 'bfr' -%}{{ r.bfr }}%
+              {%- elif c.key == 'bmi' -%}{{ r.bmi or "—" }}
+              {%- elif c.key == 'vfr' -%}{{ r.vfr }}
+              {%- elif c.key == 'muscle' -%}{{ r.muscle }} kg
+              {%- elif c.key == 'water' -%}{{ r.water }}%
+              {%- elif c.key == 'score' -%}{{ r.score or "—" }}
+              {%- endif -%}
+            </td>
+            {% endfor %}
+            <td class="ta-r">
+              <span class="rec-actions">
+                <a class="link" href="/m/{{ m.id }}/r/{{ r.id }}">查看</a>
+                <form method="post" action="/measurements/{{ r.id }}/delete" class="inline-form">
+                  <input type="hidden" name="csrf" value="{{ csrf }}">
+                  <input type="hidden" name="back" value="/m/{{ m.id }}?rs={{ rec_size }}&{{ rec_qs }}">
+                  <button class="chip chip-xs chip-danger" type="submit"
+                          data-confirm="删除这条 {{ '%.1f'|format(r.weight) }} kg 的记录？会进回收站，14 天内可还原。">删除</button>
+                </form>
+              </span>
+            </td>
+          </tr>
+          {% else %}
+          <tr><td colspan="{{ rec_cols|length + 2 }}" class="empty-cell">还没有记录</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    {% if rec_pages > 1 %}
+    <div class="pager">
+      {% if rec_page > 1 %}
+      <a class="chip" href="/m/{{ m.id }}?rp={{ rec_page - 1 }}&rs={{ rec_size }}&{{ rec_qs }}">← 上一页</a>
+      {% endif %}
+      <span class="page-info num">第 {{ rec_page }} / {{ rec_pages }} 页</span>
+      {% if rec_page < rec_pages %}
+      <a class="chip" href="/m/{{ m.id }}?rp={{ rec_page + 1 }}&rs={{ rec_size }}&{{ rec_qs }}">下一页 →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% endif %}
+{% endblock %}

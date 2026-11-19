@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}{{ "编辑成员" if member else "新增成员" }} · 韭菜称重{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">{{ "编辑成员" if member else "新增成员" }}</h1>
+    <p class="page-sub">档案用于体成分计算，改完立即生效</p>
+  </div>
+</div>
+
+<form class="form-card" method="post" action="/members/save">
+  <input type="hidden" name="csrf" value="{{ csrf }}">
+  <input type="hidden" name="claim" value="{{ claim or 0 }}">
+  <input type="hidden" name="back" value="{{ back or '/' }}">
+  {% if member %}<input type="hidden" name="id" value="{{ member.id }}">{% endif %}
+
+  {% if error %}<div class="form-error">{{ error }}</div>{% endif %}
+
+  <div class="form-grid">
+    <div class="field">
+      <label for="name">姓名</label>
+      <input class="input" id="name" name="name" maxlength="20" required
+             placeholder="成员姓名" value="{{ form.name }}">
+      <div class="field-hint">1–20 个字，不能重复</div>
+    </div>
+
+    <div class="field">
+      <label>性别</label>
+      <div class="segmented">
+        <label>
+          <input type="radio" name="sex" value="male" {% if form.sex == "male" %}checked{% endif %}>
+          <span>男</span>
+        </label>
+        <label>
+          <input type="radio" name="sex" value="female" {% if form.sex == "female" %}checked{% endif %}>
+          <span>女</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="birth_date">出生日期</label>
+      <input class="input" id="birth_date" name="birth_date" type="date" required
+             min="1900-01-01" max="{{ today }}" value="{{ form.birth_date }}">
+      <div class="field-hint">当前 <b id="age-hint">—</b> 岁</div>
+    </div>
+
+    <div class="field">
+      <label for="height_cm">身高</label>
+      <div class="stepper" data-step="1" data-min="100" data-max="220">
+        <button type="button" data-minus aria-label="减少">−</button>
+        <input id="height_cm" name="height_cm" type="number" inputmode="numeric"
+               min="100" max="220" value="{{ form.height_cm }}">
+        <span class="unit">cm</span>
+        <button type="button" data-plus aria-label="增加">+</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="goal_start">体重</label>
+      <div class="stepper" data-step="0.1" data-min="20" data-max="300" data-optional="1">
+        <button type="button" data-minus aria-label="减少">−</button>
+        <input id="goal_start" name="goal_start" type="number" step="0.1"
+               inputmode="decimal" min="20" max="300" placeholder="不填"
+               value="{{ '%.1f'|format(goal.start) if goal and goal.start is not none else '' }}">
+        <span class="unit">kg</span>
+        <button type="button" data-plus aria-label="增加">+</button>
+      </div>
+      <div class="field-hint">不填按最近一次称重</div>
+    </div>
+
+    <div class="field" id="goal">
+      <label for="goal_target">目标体重</label>
+      <div class="stepper" data-step="0.1" data-min="20" data-max="300" data-optional="1">
+        <button type="button" data-minus aria-label="减少">−</button>
+        <input id="goal_target" name="goal_target" type="number" step="0.1"
+               inputmode="decimal" min="20" max="300" placeholder="不设"
+               value="{{ '%.1f'|format(goal.target) if goal else '' }}">
+        <span class="unit">kg</span>
+        <button type="button" data-plus aria-label="增加">+</button>
+      </div>
+      <div class="field-hint">留空表示不设</div>
+    </div>
+  </div>
+
+  <div class="form-actions">
+    <button class="btn btn-primary" type="submit">保存</button>
+    <a class="btn btn-ghost" href="{{ back if back and back != '/' else '/members' }}">取消</a>
+    {% if member %}
+    <button class="btn btn-danger" type="submit" formaction="/members/{{ member.id }}/delete"
+            data-confirm="确定停用「{{ member.name }}」？历史数据会保留。">停用</button>
+    {% endif %}
+  </div>
+</form>
+{% endblock %}

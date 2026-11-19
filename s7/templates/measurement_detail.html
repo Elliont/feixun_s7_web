@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+{% block title %}{{ m.name }} · {{ at }} · 韭菜称重{% endblock %}
+
+{% block content %}
+{% set CORE_BF = ['bmi', 'bfr', 'score'] %}
+{% set CORE_NOBF = ['bmi'] %}
+{% set REST_ORDER = ['bage', 'muscle', 'smm', 'vfr', 'water', 'protein', 'fat_mass', 'lbm'] %}
+{% set core_keys = CORE_BF if comp.has_body_fat else CORE_NOBF %}
+{% set card_map = {} %}
+{% for c in cards %}{% set _ = card_map.update({c.key: c}) %}{% endfor %}
+
+<div class="back-bar">
+  <a class="back-link" href="/m/{{ m.id }}">← 返回</a>
+</div>
+
+<!-- 主数字：与成员详情页同构（数字 → 身份/体型 → 较上次 → 代谢年龄/身体评分） -->
+<div class="hero">
+  <div class="hero-main">
+    <div class="hero-value num">{{ "%.1f"|format(weight) }}<span>kg</span></div>
+    <div class="hero-sub">
+      <span>{{ "男" if male else "女" }} · {{ m.age }} 岁 · {{ m.height_cm }} cm</span>
+      {% if comp.has_body_fat and comp.body_type %}<span class="hero-type">{{ comp.body_type }}</span>{% endif %}
+    </div>
+    <div class="hero-meta">
+      {{ at }} 称重
+      {% if delta is not none %}
+        · 较上次 <b class="{{ 'down' if delta < 0 else ('up' if delta > 0 else '') }} num">{{ "%+.1f"|format(delta) }} kg</b>
+      {% else %}
+        · 这是第一条记录
+      {% endif %}
+    </div>
+
+    {% if comp.has_body_fat %}
+    {% set sc = card_map.get('score') %}{% set ba = card_map.get('bage') %}
+    <div class="hero-stats">
+      {% if ba %}
+      <div class="hero-stat lv-{{ ba.level }}">
+        <em>代谢年龄</em>
+        <span class="v"><span class="n">{{ ba.value }}</span><span class="u">岁</span></span>
+      </div>
+      {% endif %}
+      {% if sc %}
+      <div class="hero-stat lv-{{ sc.level }}">
+        <em>身体评分</em>
+        <span class="v"><span class="n">{{ sc.value }}</span><span class="u">分</span><span class="t">{{ sc.verdict }}</span></span>
+      </div>
+      {% endif %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if not comp.has_body_fat %}
+<div class="banner banner-warn">
+  <b>这次没测到阻抗</b>
+  <span style="font-size:13px">只有体重与 BMI 类指标；光脚踩实电极、双手握住手柄即可测出体成分</span>
+</div>
+{% endif %}
+
+<!-- 核心指标 -->
+<div class="section-head">
+  <h2 class="section-title">核心指标</h2>
+</div>
+<div class="core-grid">
+  {% for k in core_keys %}
+  {% set c = card_map.get(k) %}
+  {% if c %}
+  <div class="core-card lv-{{ c.level }}">
+    <span class="m-head">
+      <span class="core-label">{{ c.label }}</span>
+      <span class="qmark" role="button" tabindex="0" data-tip="{{ c.hint }}"
+            aria-label="查看{{ c.label }}的计算方法">?</span>
+    </span>
+    <span class="core-foot">
+      <span class="core-value num">{{ c.value }}<small>{{ c.unit }}</small></span>
+      {% if c.verdict %}<span class="m-verdict">{{ c.verdict }}</span>{% endif %}
+    </span>
+  </div>
+  {% endif %}
+  {% endfor %}
+</div>
+
+<!-- 全部指标 -->
+{% set rest = [] %}
+{% for k in REST_ORDER %}
+{% if k not in core_keys and card_map.get(k) %}{% set _ = rest.append(card_map.get(k)) %}{% endif %}
+{% endfor %}
+{% if rest %}
+<div class="section-head">
+  <h2 class="section-title">全部指标</h2>
+</div>
+<div class="metrics">
+  {% for c in rest %}
+  <div class="metric lv-{{ c.level }}">
+    <span class="m-head">
+      <span class="metric-label">{{ c.label }}</span>
+      <span class="qmark" role="button" tabindex="0" data-tip="{{ c.hint }}"
+            aria-label="查看{{ c.label }}的计算方法">?</span>
+    </span>
+    <span class="metric-foot">
+      <span class="metric-value num">{{ c.value }}<small>{{ c.unit }}</small></span>
+      {% if c.verdict %}<span class="m-verdict">{{ c.verdict }}</span>{% endif %}
+    </span>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- 翻页与删除：放到页面最下方（左=更早，右=更新） -->
+<div class="rec-nav">
+  <span class="rec-nav-links">
+    {% if older %}<a class="btn btn-ghost" href="/m/{{ m.id }}/r/{{ older.id }}">← 上一次</a>{% endif %}
+    {% if newer %}<a class="btn btn-ghost" href="/m/{{ m.id }}/r/{{ newer.id }}">下一次 →</a>{% endif %}
+  </span>
+  <form method="post" action="/measurements/{{ rec.id }}/delete" class="inline-form">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="back" value="/m/{{ m.id }}">
+    <button class="btn btn-danger" type="submit"
+            data-confirm="删除这次 {{ '%.1f'|format(weight) }} kg 的记录？14 天内可从回收站还原。">删除记录</button>
+  </form>
+</div>
+{% endblock %}

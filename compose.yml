@@ -1,0 +1,70 @@
+name: s7
+
+# 韭菜称重 · 生产部署
+#   默认镜像：docker compose pull && docker compose up -d      （从 ghcr 拉）
+#   本地构建：docker compose up -d --build                     （用本目录 Dockerfile）
+#   环境变量见 .env.example
+
+services:
+  ingest:
+    image: ${S7_IMAGE:-ghcr.io/elliont/feixun_s7_web:latest}
+    build: .
+    command: ["python", "-m", "s7.ingest"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 200
+    mem_limit: 256m
+    environment:
+      S7_DATA_DIR: /data
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      # 秤会连到这里；S7_INGEST_BIND 留空表示监听所有网卡
+      - "${S7_INGEST_BIND:-0.0.0.0}:30101:30101"
+    volumes:
+      - s7data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',30101))==0 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  web:
+    image: ${S7_IMAGE:-ghcr.io/elliont/feixun_s7_web:latest}
+    build: .
+    command: ["python", "-m", "s7.web"]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: ["/tmp"]
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 200
+    mem_limit: 256m
+    environment:
+      S7_DATA_DIR: /data
+      # 有这两个变量就按它们初始化管理员；留空则首次访问走 /setup 自己建号
+      S7_ADMIN_USERNAME: ${S7_ADMIN_USERNAME:-}
+      S7_ADMIN_PASSWORD: ${S7_ADMIN_PASSWORD:-}
+      # 留空时首次启动自动生成并写入数据库（重启不掉登录）
+      S7_SECRET_KEY: ${S7_SECRET_KEY:-}
+      S7_DEV_NOAUTH: "0"
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "${S7_WEB_BIND:-8080}:8080"
+    depends_on:
+      ingest:
+        condition: service_healthy
+    volumes:
+      - s7data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  s7data:

@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}总览 · 韭菜称重{% endblock %}
+
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">总览</h1>
+    <p class="page-sub">共 {{ stats.member_count }} 位成员 · 今日已称 {{ stats.today_count }} 次</p>
+  </div>
+</div>
+
+{% if ok %}<div class="banner banner-ok"><b>已保存</b>新成员已加入，之后的称重会自动分配。</div>{% endif %}
+{% if stats.pending > 0 %}
+<div class="banner banner-warn">
+  <b>{{ stats.pending }} 条待分配</b>
+  {% if pending %}
+  <span class="num">{{ "%.1f"|format(pending[0].weight_kg) }} kg · {{ pending[0].measured_at[:16].replace("T", " ") }}</span>
+  {% endif %}
+  <span class="spacer"></span>
+  <a href="#pending">去处理 ↓</a>
+</div>
+{% endif %}
+
+{% if stats.total_count == 0 %}
+<div class="banner banner-info">
+  还没有收到过秤的数据。请先给秤配网（「韭菜配网」App），再光脚上秤称一次。
+</div>
+{% endif %}
+
+<div class="stats">
+  <a class="stat" href="/records?date_from={{ today }}&date_to={{ today }}">
+    <span class="stat-icon" style="background:var(--teal-50);color:var(--teal-700)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 3v3"/><rect x="4" y="6" width="16" height="14" rx="4"/><path d="M12 13l3-3"/>
+      </svg>
+    </span>
+    <div>
+      <div class="stat-value num">{{ stats.today_count }}<small>次</small></div>
+      <div class="stat-label">今日称重</div>
+    </div>
+  </a>
+
+  <a class="stat" href="#pending">
+    <span class="stat-icon" style="background:var(--warn-bg);color:var(--warn)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+    </span>
+    <div>
+      <div class="stat-value num">{{ stats.pending }}<small>条</small></div>
+      <div class="stat-label">待分配测量</div>
+    </div>
+  </a>
+
+  <a class="stat" href="/members">
+    <span class="stat-icon" style="background:var(--info-bg);color:var(--info)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/>
+        <circle cx="9" cy="7" r="4"/>
+        <path d="M22 21v-2a4 4 0 0 0-3-3.87"/>
+        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+      </svg>
+    </span>
+    <div>
+      <div class="stat-value num">{{ stats.member_count }}<small>位</small></div>
+      <div class="stat-label">家庭成员</div>
+    </div>
+  </a>
+
+  <a class="stat" href="{{ '/m/' ~ stats.last_member_id if stats.last_member_id else '/records' }}">
+    <span class="stat-icon" style="background:var(--teal-50);color:var(--teal-700)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>
+      </svg>
+    </span>
+    <div>
+      <div class="stat-value num">{{ stats.last_weight if stats.last_weight is not none else "—" }}<small>kg</small></div>
+      <div class="stat-label">最近一次称重{% if stats.last_weight_at %} · {{ stats.last_weight_at }}{% endif %}</div>
+    </div>
+  </a>
+</div>
+
+<div class="section-head">
+  <h2 class="section-title">成员</h2>
+  <a class="section-link" href="/members">管理成员 →</a>
+</div>
+
+{% if members %}
+<div class="members">
+  {% for m in members %}
+  <div class="member" style="--c:{{ m.color }}">
+    <a class="member-link" href="/m/{{ m.id }}" aria-label="{{ m.name }} 的详情"></a>
+    <div class="member-head">
+      <span class="dot"></span>
+      <span class="member-name">{{ m.name }}</span>
+      <span class="member-meta">{{ "男" if m.sex == "male" else "女" }} · {{ m.age }} 岁 · {{ m.height_cm }} cm</span>
+      <span class="ring">
+        {% if m.goal %}
+          {% set done = m.goal.delta <= 0 %}
+          {% set pct = 100 if done else (m.goal.progress if m.goal.progress >= 1 else 1) %}
+        <svg width="52" height="52" viewBox="0 0 52 52" aria-hidden="true">
+          <circle cx="26" cy="26" r="23" fill="none" stroke="#E9EDF1" stroke-width="5.5"/>
+          <circle cx="26" cy="26" r="23" fill="none" stroke="{{ '#16A34A' if done else '#00A98F' }}"
+                  stroke-width="5.5" stroke-linecap="round"
+                  stroke-dasharray="{{ '%.1f'|format(pct / 100 * 144.5) }} 144.5"/>
+        </svg>
+        <span class="ring-label" style="color:{{ '#15803D' if done else '#007562' }}">
+          {{- "✓" if done else pct | round(0) | int ~ "%" -}}
+        </span>
+        {% else %}
+        <svg width="52" height="52" viewBox="0 0 52 52" aria-hidden="true">
+          <circle cx="26" cy="26" r="23" fill="none" stroke="#E9EDF1" stroke-width="5.5"/>
+        </svg>
+        <span class="ring-label" style="color:#6B7280">—</span>
+        {% endif %}
+      </span>
+    </div>
+
+    {% if m.weight_kg %}
+    <div class="member-weight">
+      <span class="weight num">{{ "%.1f"|format(m.weight_kg) }}</span><span class="unit">kg</span>
+      {% if m.delta is defined and m.delta is not none %}
+      <span class="chip chip-static chip-{{ 'ok' if m.delta < 0 else 'soft' }} num">较上次 {{ "%+.1f"|format(m.delta) }}</span>
+      {% endif %}
+    </div>
+    <div class="member-foot">
+      <span class="foot-goal">
+        {%- if m.match_state in ("pending", "unassigned") -%}
+        <span class="member-warn">这条还没分配</span> <a class="goal-link" href="#pending">去分配 →</a>
+        {%- elif m.goal and m.goal.delta <= 0 -%}
+        <a class="goal-link goal done" href="/members/{{ m.id }}#goal">目标已达成 ✓</a>
+        {%- elif m.goal -%}
+        <a class="goal-link goal num" href="/members/{{ m.id }}#goal">距目标 {{ "%.1f"|format(m.goal.delta) }} kg</a>
+        {%- else -%}
+        <a class="goal-link" href="/members/{{ m.id }}#goal">未设目标 · 去设置 →</a>
+        {%- endif -%}
+      </span>
+      <span class="foot-time">上次称重：{{ m.last_human }}</span>
+    </div>
+    {% else %}
+    <div class="empty">
+      <b>还没有数据</b>光脚踩上秤称一次即可
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="empty">
+  <b>还没有家庭成员</b>
+  先添加成员（姓名 / 性别 / 出生年 / 身高），之后的称重才能自动分配
+</div>
+{% endif %}
+
+{% if pending %}
+<div class="section-head" id="pending">
+  <h2 class="section-title">待分配</h2>
+  <span class="section-link">{{ pending|length }} 条</span>
+</div>
+<div class="pending-list">
+  {% for p in pending %}
+  <div class="pending-item">
+    <div>
+      <div class="pending-weight num">{{ "%.1f"|format(p.weight_kg) }} kg</div>
+      <div class="pending-time">{{ p.measured_at[:16].replace("T", " ") }}</div>
+    </div>
+    <div class="header-spacer"></div>
+    <form class="pending-form" method="post" action="/measurements/{{ p.id }}/assign">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="back" value="/#pending">
+      <select class="select select-sm" name="member_id" aria-label="选择成员">
+        <option value="">选择成员…</option>
+        {% for m in members %}
+        <option value="{{ m.id }}">{{ m.name }}</option>
+        {% endfor %}
+        <option value="new">＋ 新增成员</option>
+      </select>
+      <button class="btn btn-primary btn-sm" type="submit">确认</button>
+    </form>
+    <form method="post" action="/measurements/{{ p.id }}/exclude" style="margin:0">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <input type="hidden" name="value" value="1">
+      <input type="hidden" name="back" value="/#pending">
+      <button class="chip chip-ghost" type="submit"
+              data-confirm="忽略这条 {{ '%.1f'|format(p.weight_kg) }} kg 的记录？之后可在「所有记录 · 已忽略」里找回。">忽略</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if recent %}
+<div class="section-head">
+  <h2 class="section-title">最近称重</h2>
+  <a class="section-link" href="/records">全部记录 →</a>
+</div>
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>成员</th><th>体重</th><th>体脂率</th><th>BMI</th><th>身体评分</th><th>时间</th><th class="ta-r">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in recent %}
+      <tr>
+        <td><span class="td-member"><span class="dot" style="--c:{{ r.color }}"></span>{{ r.name }}</span></td>
+        <td><b class="num">{{ "%.1f"|format(r.weight) }}</b> kg</td>
+        <td class="num {{ r.lv_bfr }}">{{ (r.bfr ~ "%") if r.bfr else "—" }}</td>
+        <td class="num {{ r.lv_bmi }}">{{ r.bmi or "—" }}</td>
+        <td class="num {{ r.lv_score }}">{{ r.score if r.score is not none else "—" }}</td>
+        <td class="nowrap num">{{ r.at }}</td>
+        <td class="ta-r">
+          <a class="link" href="/m/{{ r.mid }}">详情</a>
+          <form class="inline-form" method="post" action="/measurements/{{ r.id }}/delete">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <input type="hidden" name="back" value="/">
+            <button class="chip chip-xs chip-danger" type="submit"
+                    data-confirm="删除这条 {{ '%.1f'|format(r.weight) }} kg 的记录？不可恢复。">删除</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

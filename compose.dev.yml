@@ -1,0 +1,39 @@
+name: s7
+
+services:
+  ingest:
+    build: .
+    image: s7web:latest
+    command: ["python", "-m", "s7.ingest"]
+    restart: unless-stopped
+    environment:
+      S7_DATA_DIR: /data
+      S7_DEBUG: "1"
+      TZ: Asia/Shanghai
+    ports:
+      - "30101:30101"
+    volumes:
+      - ./s7:/app/s7          # 开发档：源码热挂载
+      - s7data:/data
+
+  web:
+    build: .
+    image: s7web:latest
+    command: ["python", "-m", "s7.web"]
+    restart: unless-stopped
+    environment:
+      S7_DATA_DIR: /data
+      S7_DEBUG: "1"
+      S7_DEV_NOAUTH: "1"
+      S7_DEV_RELOAD: "1"
+      TZ: Asia/Shanghai
+    ports:
+      - "8080:8080"
+    depends_on:
+      - ingest
+    volumes:
+      - ./s7:/app/s7          # 开发档：代码/模板/静态文件热挂载
+      - s7data:/data
+
+volumes:
+  s7data:

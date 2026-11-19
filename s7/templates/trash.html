@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block title %}回收站 · 韭菜称重{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1 class="page-title">回收站</h1>
+    <p class="page-sub">
+      共 {{ rows|length }} 条 · 删除的记录保留 {{ days }} 天，到期自动彻底删除
+      {%- if purged %} · 刚清理了 {{ purged }} 条超期记录{% endif %}
+    </p>
+  </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
+    {% if rows %}
+    <form class="inline-form" method="post" action="/trash/empty">
+      <input type="hidden" name="csrf" value="{{ csrf }}">
+      <button class="btn btn-danger" type="submit"
+              data-confirm="清空回收站？{{ rows|length }} 条记录会被立刻彻底删除，无法恢复。">清空回收站</button>
+    </form>
+    {% endif %}
+    <a class="btn btn-ghost" href="/records">所有记录</a>
+  </div>
+</div>
+
+{% if ok == 1 %}<div class="banner banner-ok"><b>已处理</b>记录已从回收站恢复或被彻底删除。</div>{% endif %}
+{% if ok == 0 %}<div class="banner banner-warn"><b>没有恢复成功</b>这条记录与现有数据冲突（同一时间已有同样重量的记录），可稍后重试或直接彻底删除。</div>{% endif %}
+
+<div class="card table-card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>称重时间</th><th>成员</th><th>体重</th><th>删除时间</th>
+        <th>剩余</th><th class="ta-r">操作</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="row-muted">
+        <td class="nowrap num">{{ r.measured_at }}</td>
+        <td>
+          {% if r.member_id %}{{ r.member }}
+          {% else %}<span class="tag tag-warn">待分配</span>{% endif %}
+        </td>
+        <td><b class="num">{{ "%.1f"|format(r.weight) }}</b> kg</td>
+        <td class="num muted">{{ r.deleted_at }}</td>
+        <td class="num">{{ r.left }} 天</td>
+        <td class="ta-r">
+          <form method="post" action="/trash/{{ r.trash_id }}/restore" class="inline-form">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="chip chip-xs" type="submit">还原</button>
+          </form>
+          <form method="post" action="/trash/{{ r.trash_id }}/delete" class="inline-form">
+            <input type="hidden" name="csrf" value="{{ csrf }}">
+            <button class="chip chip-xs chip-danger" type="submit"
+                    data-confirm="彻底删除这条 {{ '%.1f'|format(r.weight) }} kg 的记录？不可恢复。">彻底删除</button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="empty-cell">回收站是空的</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

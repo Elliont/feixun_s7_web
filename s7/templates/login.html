@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}登录 · 韭菜称重{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="login-card" method="post" action="/login">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    <input type="hidden" name="next" value="{{ next }}">
+
+    <div class="login-brand">
+      <span class="brand-mark">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 3v3"/><rect x="4" y="6" width="16" height="14" rx="4"/>
+          <path d="M12 13l3-3"/>
+        </svg>
+      </span>
+      <div>
+        <div class="login-title">韭菜称重</div>
+        <div class="login-sub">家庭体脂秤数据</div>
+      </div>
+    </div>
+
+    {% if err == 1 %}<div class="form-error">用户名或密码不正确</div>{% endif %}
+    {% if err == 2 %}<div class="form-error">尝试过于频繁，请 5 分钟后再试</div>{% endif %}
+
+    <div class="field">
+      <label for="username">用户名</label>
+      <input class="input" id="username" name="username" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">密码</label>
+      <input class="input" id="password" name="password" type="password"
+             autocomplete="current-password" required>
+    </div>
+
+    <button class="btn btn-primary btn-block" type="submit">登录</button>
+  </form>
+</div>
+{% endblock %}
