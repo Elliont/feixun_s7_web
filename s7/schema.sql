@@ -44,7 +44,6 @@ CREATE TABLE IF NOT EXISTS measurements(
   match_state TEXT NOT NULL DEFAULT 'auto',
   match_score REAL,
   excluded INTEGER NOT NULL DEFAULT 0,
-  note TEXT,
   raw_frame_hex TEXT,
   created_at TEXT NOT NULL
 );
@@ -111,11 +110,8 @@ CREATE TABLE IF NOT EXISTS device_members(
 INSERT OR IGNORE INTO settings(key,value) VALUES
   ('grading','ace'),
   ('match_auto_kg','1'),
-  ('match_pending_kg','1.0'),
   ('match_ref_n','5'),
-  ('offline_alert_h','24'),
   ('backup_keep_days','30'),
   ('notify_enabled','0'),
   ('notify_events','measure.unassigned'),
-  ('pushplus_token',''),
-  ('mqtt_enabled','0');
+  ('pushplus_token','');

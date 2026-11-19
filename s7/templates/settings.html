@@ -98,8 +98,8 @@
     </form>
   </div>
 
-  <!-- 第二行：pushplus 通知 / MQTT -->
-  <div class="set-row set-row-2">
+  <!-- pushplus 通知 -->
+  <div class="set-row">
     <form class="card set-card" method="post" action="/settings">
       <input type="hidden" name="csrf" value="{{ csrf }}">
       <input type="hidden" name="form_id" value="notify">
@@ -155,36 +155,6 @@
       </div>
     </form>
 
-    <form class="card set-card" method="post" action="/settings">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <input type="hidden" name="form_id" value="mqtt">
-      <div class="card-head"><span class="card-title">MQTT / HomeAssistant</span></div>
-
-      <div class="field">
-        <label>启用 MQTT</label>
-        <label class="switch">
-          <input type="checkbox" name="mqtt_enabled" value="1"
-                 {% if values.mqtt_enabled=='1' %}checked{% endif %}>
-          <span>尚未实现，仅保存配置</span>
-        </label>
-      </div>
-
-      <div class="field">
-        <label for="mqtt_host">MQTT 主机</label>
-        <input class="input" id="mqtt_host" name="mqtt_host" value="{{ values.mqtt_host }}"
-               placeholder="192.168.1.10:1883">
-      </div>
-
-      <div class="field">
-        <label for="mqtt_topic">Topic 前缀</label>
-        <input class="input" id="mqtt_topic" name="mqtt_topic"
-               value="{{ values.mqtt_topic or 'jiucai/scale' }}">
-      </div>
-
-      <div class="form-actions">
-        <button class="btn btn-primary" type="submit">保存</button>
-      </div>
-    </form>
   </div>
 </div>
 {% endblock %}

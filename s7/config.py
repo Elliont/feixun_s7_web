@@ -27,6 +27,9 @@ SESSION_DAYS = int(os.environ.get("S7_SESSION_DAYS", "30"))
 # 运行
 DEBUG = os.environ.get("S7_DEBUG", "0") == "1"
 TZ = os.environ.get("TZ", "Asia/Shanghai")
+# HTTPS 反代后应设为 1，给会话/CSRF cookie 加 Secure 标志。
+# 默认 0 以兼容直接以 http 访问的自建部署（Secure cookie 在 http 下不会写入）。
+COOKIE_SECURE = os.environ.get("S7_COOKIE_SECURE", "0") == "1"
 
 
 def ensure_dirs() -> None:

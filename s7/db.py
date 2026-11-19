@@ -43,6 +43,17 @@ def now_iso() -> str:
     return datetime.now().astimezone().replace(microsecond=0).isoformat()
 
 
+def cutoff_iso(days: int) -> str:
+    """N 天前的本地朴素时间，格式与 measured_at(isoformat) 一致。
+
+    measured_at 存的是 datetime.now().isoformat()（形如 2026-11-19T10:00:00，带 T、
+    无时区）。SQL 里用 datetime('now','-N day') 生成的是「2026-11-19 10:00:00」（空格），
+    与带 T 的值做字符串比较会错判边界日。这里在 Python 侧生成同格式截止值，SQL 用
+    measured_at >= ? 传参，彻底避免格式/时区不一致。
+    """
+    return (datetime.now() - timedelta(days=days)).replace(microsecond=0).isoformat()
+
+
 def init_db() -> None:
     """建表（幂等）。"""
     global _initialized
@@ -66,6 +77,7 @@ def ensure_schema() -> None:
     schema = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
     c = conn()
     c.executescript(schema)
+    _migrate_v2(c)          # 老备份缺 birth_date 列；函数本身幂等
     _ensure_trash(c)
     _ensure_device_mode(c)
 
@@ -103,7 +115,11 @@ def one(sql: str, params: tuple = ()) -> sqlite3.Row | None:
 
 def execute(sql: str, params: tuple = ()) -> int:
     cur = conn().execute(sql, params)
-    return cur.lastrowid or cur.rowcount
+    # INSERT 返回新行 id；UPDATE/DELETE 返回受影响行数。
+    # 不能用 lastrowid or rowcount：非 INSERT 的 lastrowid 是上次 INSERT 的残留值。
+    if cur.lastrowid and sql.lstrip().upper().startswith("INSERT"):
+        return cur.lastrowid
+    return cur.rowcount
 
 
 # ---------------------------------------------------------------- 设置

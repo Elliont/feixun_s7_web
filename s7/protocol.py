@@ -85,6 +85,23 @@ def peek_frame_length(buf: bytes) -> int:
     return -1
 
 
+# 线上同步头（明文 55 AA 00 经 XOR 0x55 后的字节）
+_SYNC_HEAD = bytes(b ^ XOR_KEY for b in (0x55, 0xAA, 0x00))
+
+
+def resync_skip(buf: bytes) -> int:
+    """返回为重新对齐帧头应丢弃的字节数。
+
+    头部对不上时，向后搜索下一个同步头并丢掉其前的垃圾字节；找不到则保留
+    末尾 2 字节（可能是被切断的同步头前缀），其余全部丢弃，避免 buf 无限增长。
+    """
+    pos = buf.find(_SYNC_HEAD, 1)
+    if pos > 0:
+        return pos
+    # 没找到完整同步头：只保留末尾最多 2 个字节，等待后续字节拼出同步头
+    return max(0, len(buf) - 2)
+
+
 def seal(plain: bytes) -> bytes:
     """明文 → 线上字节（补 CRC 后整帧 XOR）。"""
     plain = bytearray(plain)
@@ -115,8 +132,10 @@ def build_login_ack(request_cipher: bytes, now: datetime | None = None) -> bytes
     p[18:24] = req[12:18]
     p[26], p[27] = 0xC0, 0x00
     p[28:35] = time_bytes(now)
-    p[35:39] = req[28:32]  # 回声
-    p[39] = req[32]
+    # 回声字段依赖请求长度：MIN_FRAME 是 32，某些固件登录帧恰好 32 字节，
+    # 此时 req[32] 会越界 → 一个字节都不回、秤卡在登录态。短帧时该位补 0。
+    p[35:39] = req[28:32]  # 回声（32 字节帧里 req[28:32] 仍在范围内）
+    p[39] = req[32] if len(req) > 32 else 0
     return seal(bytes(p))
 
 
@@ -139,6 +158,15 @@ def valid_impedance(v: int) -> bool:
     return IMPEDANCE_MIN <= v <= IMPEDANCE_MAX
 
 
+# 体重合理区间（centi-kg）：2–300 kg。CRC 算法公开，无此校验时可伪造任意体重
+# 污染统计；真人体脂秤不会给出区间外数值。
+WEIGHT_MIN_CENTI, WEIGHT_MAX_CENTI = 200, 30000
+
+
+def valid_weight(centi_kg: int) -> bool:
+    return WEIGHT_MIN_CENTI <= centi_kg <= WEIGHT_MAX_CENTI
+
+
 def parse_record(plain: bytes) -> dict | None:
     """解析上报/历史帧，返回记录 dict；非数据帧返回 None。"""
     length = plain[3]
@@ -147,7 +175,7 @@ def parse_record(plain: bytes) -> dict | None:
 
     if cmd == CMD_REPORT and length >= 60:
         weight = (plain[43] << 8) | plain[44]
-        if weight <= 0:
+        if not valid_weight(weight):
             return None
         data_type = plain[45]
         imps = [((plain[46 + i * 2] << 8) | plain[47 + i * 2]) for i in range(6)]
@@ -174,7 +202,7 @@ def parse_record(plain: bytes) -> dict | None:
                 measured = datetime.now()
         except ValueError:
             measured = datetime.now()
-        if weight <= 0:
+        if not valid_weight(weight):
             return None
         return {
             "cmd": "0x8090",

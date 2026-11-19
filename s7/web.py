@@ -6,19 +6,33 @@
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, bodycomp, config, db, grading, mqtt, notify
-from .ui import (PALETTE, _age, _goal_view, _human_since, _member_card,
-                 _recent_rows, _member_stats, _pending_count, _row, _slope_per_day,
-                 _sparkline, _today_stats, base_dir, ctx, templates)
+from . import __version__, bodycomp, config, db, grading, notify
+from .ui import (PALETTE, _age, _goal_view, _member_card, _member_stats,
+                 _recent_rows, _row, _sparkline, _today_stats,
+                 base_dir, ctx, templates)
 
 log = logging.getLogger("s7.web")
 
-app = FastAPI(title="韭菜称重", version=__version__, docs_url=None, redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时初始化数据库与管理员账号（替代已废弃的 @app.on_event）。"""
+    db.init_db()
+    db.trash_purge()                     # 回收站到期清理（14 天）
+    from .pages import ensure_admin, ensure_secret
+    ensure_secret()                      # 会话密钥落库，重启不掉登录
+    ensure_admin()
+    yield
+
+
+app = FastAPI(title="韭菜称重", version=__version__, docs_url=None, redoc_url=None,
+              lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=str(base_dir() / "static")), name="static")
 
 
@@ -47,7 +61,7 @@ def api_overview():
     return {"ok": True, "data": {
         "stats": _today_stats(), "members": cards, "pending": pending,
         "debug": config.DEV_NOAUTH, "version": __version__,
-        "mqtt": mqtt.enabled(), "notify": notify.enabled(),
+        "notify": notify.enabled(),
     }}
 
 
@@ -308,15 +322,15 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
         delta_last = round((latest["weight_centi_kg"] - prev["weight_centi_kg"]) / 100.0, 2)
 
     week = db.query("SELECT weight_centi_kg FROM measurements WHERE member_id=? "
-                    "AND excluded=0 AND measured_at >= datetime('now','-7 day') "
-                    "ORDER BY measured_at DESC", (member_id,))
+                    "AND excluded=0 AND measured_at >= ? "
+                    "ORDER BY measured_at DESC", (member_id, db.cutoff_iso(7)))
     avg7 = round(sum(r["weight_centi_kg"] for r in week) / len(week) / 100.0, 2) if week else None
     delta_avg = round(weight - avg7, 2) if (weight is not None and avg7 is not None) else None
 
     series = db.query("SELECT measured_at, weight_centi_kg FROM measurements "
                       "WHERE member_id=? AND excluded=0 "
-                      "AND measured_at >= datetime('now','-30 day') ORDER BY measured_at",
-                      (member_id,))
+                      "AND measured_at >= ? ORDER BY measured_at",
+                      (member_id, db.cutoff_iso(30)))
     spark = _sparkline([r["weight_centi_kg"] / 100.0 for r in series])
 
     # ---- 体重记录：分页 + 排序 + 按需显示列 + 每行可点进单次详情
@@ -415,8 +429,8 @@ def member_series(member_id: int, days: int = 365):
     rows = db.query(
         "SELECT id, measured_at, weight_centi_kg, impedance_used_ohm FROM measurements "
         "WHERE member_id=? AND excluded=0 "
-        "AND measured_at >= datetime('now', ?) ORDER BY measured_at",
-        (member_id, f"-{days} day"))
+        "AND measured_at >= ? ORDER BY measured_at",
+        (member_id, db.cutoff_iso(days)))
     points = []
     for r in rows:
         w = r["weight_centi_kg"] / 100.0
@@ -479,16 +493,6 @@ def measurement_detail(request: Request, member_id: int, rid: int):
 
 
 # ---------------------------------------------------------------- 启动
-
-@app.on_event("startup")
-def _startup() -> None:
-    """初始化数据库与管理员账号（没有账号就让首次访问去 /setup 建）。"""
-    db.init_db()
-    db.trash_purge()                     # 回收站到期清理（14 天）
-    from .pages import ensure_admin, ensure_secret
-    ensure_secret()                      # 会话密钥落库，重启不掉登录
-    ensure_admin()
-
 
 from . import pages  # noqa: E402  记录/趋势/目标/设置/登录
 

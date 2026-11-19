@@ -45,7 +45,6 @@ def _pick(pool, weight_kg: float, refs: dict[int, float], auto_kg: float):
 
 def attribute(weight_kg: float, members, refs: dict[int, float],
               auto_kg: float | None = None,
-              pending_kg: float | None = None,
               device_mac: str | None = None,
               bindings: dict[str, set[int]] | None = None) -> tuple[int | None, str, float | None]:
     """返回 (member_id | None, state, score)。"""

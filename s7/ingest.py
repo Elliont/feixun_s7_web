@@ -9,12 +9,42 @@ import logging
 import socket
 import socketserver
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from . import attribution, db, protocol
 
 log = logging.getLogger("s7.ingest")
 
 _LOCK = threading.Lock()
+_MAX_BUF = 4096          # 正常帧最大 64B；远超此值说明流已错位或遭灌水，丢弃重同步
+# 通知走独立线程池：pushplus 超时可达 16s，绝不能占用采集线程。
+_NOTIFY_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="s7-notify")
+
+
+def _notify_async(member_id, state, weight_kg, measured_at_iso: str) -> None:
+    """后台发送称重通知；失败只记日志，不影响采集。"""
+    def _run() -> None:
+        try:
+            from . import notify
+            who = None
+            if member_id:
+                who = next((m["name"] for m in db.active_members()
+                            if m["id"] == member_id), None)
+            events = ["measure.any"]
+            if member_id:
+                events.append(f"measure.member.{member_id}")
+            if state == attribution.UNASSIGNED:
+                events.append("measure.unassigned")
+            notify.send("measure", {
+                "title": (f"{who} 称重 {weight_kg:.1f} kg" if who
+                          else f"有称重待认领 {weight_kg:.1f} kg"),
+                "member": who,
+                "weight_kg": weight_kg,
+                "measured_at": measured_at_iso,
+            }, aliases=events)
+        except Exception:
+            log.exception("异步通知失败")
+    _NOTIFY_POOL.submit(_run)
 
 
 def _event(mac: str, kind: str) -> None:
@@ -47,7 +77,9 @@ def _save(record: dict) -> None:
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (member_id, record["mac"], record["measured_at"].isoformat(),
                  record["weight_centi_kg"], imps, imp,
-                 1 if imp > 0 else 0, record["source"], state, score,
+                 # 写帧里的真实 data_type，不再用「有阻抗=1」的猜测值覆盖
+                 record.get("data_type", 1 if imp > 0 else 0),
+                 record["source"], state, score,
                  record.get("raw"), db.now_iso()))
         except Exception as exc:
             if "UNIQUE" in str(exc).upper():
@@ -58,23 +90,8 @@ def _save(record: dict) -> None:
     log.info("入库 %.2fkg 阻抗%s 归属=%s(%s)",
              weight_kg, f"{imp:.1f}Ω" if imp else "无", member_id or "-", state)
 
-    # 通知：任何称重 / 指定成员称重 / 无法确定归属，三类订阅任一命中即发送
-    from . import notify
-    who = None
-    if member_id:
-        who = next((m["name"] for m in db.active_members() if m["id"] == member_id), None)
-    events = ["measure.any"]
-    if member_id:
-        events.append(f"measure.member.{member_id}")
-    if state == attribution.UNASSIGNED:
-        events.append("measure.unassigned")
-    notify.send("measure", {
-        "title": (f"{who} 称重 {weight_kg:.1f} kg" if who
-                  else f"有称重待认领 {weight_kg:.1f} kg"),
-        "member": who,
-        "weight_kg": weight_kg,
-        "measured_at": record["measured_at"].isoformat(),
-    }, aliases=events)
+    # 通知（异步，见 _notify_async）：任何称重 / 指定成员称重 / 无法确定归属，任一命中即发送
+    _notify_async(member_id, state, weight_kg, record["measured_at"].isoformat())
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -96,11 +113,24 @@ class Handler(socketserver.BaseRequestHandler):
                 if not chunk:
                     break
                 buf += chunk
+                if len(buf) > _MAX_BUF:
+                    log.warning("%s 缓冲区超限(%d)，丢弃重同步", peer, len(buf))
+                    buf = buf[-2:]       # 只留末尾 2 字节，等待后续拼出同步头
 
                 while True:
                     length = protocol.peek_frame_length(buf)
-                    if length < 0 or len(buf) < length:
+                    if length < 0:
+                        # 帧头对不上：向后找下一个同步头，丢弃前面的垃圾字节，
+                        # 否则 buf 只增不减、这条连接永久解不出帧。
+                        if len(buf) < 4:
+                            break        # 字节还不够，等下一次 recv
+                        skip = protocol.resync_skip(buf)
+                        if skip > 0:
+                            buf = buf[skip:]
+                            continue
                         break
+                    if len(buf) < length:
+                        break            # 帧还没收全，等下一次 recv
                     raw, buf = buf[:length], buf[length:]
                     self._dispatch(sock, raw, peer)
                     mac_seen = mac_seen or self._mac
@@ -139,13 +169,15 @@ class Handler(socketserver.BaseRequestHandler):
         if cmd in (protocol.CMD_REPORT, protocol.CMD_RECORD):
             length = plain[3]
             record = protocol.parse_record(plain)
-            if record:
-                record["raw"] = raw.hex()
-                _save(record)
+            # 必须先把 ACK 发回秤：_save 内含同步通知（pushplus 超时可达 16s），
+            # 任何耗时操作都不能挡在 ACK 前，否则秤等待上报确认超时、行为不可控。
             ack_cmd = (protocol.CMD_REPORT_ACK if cmd == protocol.CMD_REPORT
                        else protocol.CMD_RECORD_ACK)
             sock.sendall(protocol.build_time_ack(raw, ack_cmd, length))
             _event(self._mac, "report")
+            if record:
+                record["raw"] = raw.hex()
+                _save(record)
             return
 
         # 其它命令：原样回 cmd|0x4000

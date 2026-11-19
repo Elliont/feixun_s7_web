@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import Request
 from fastapi.templating import Jinja2Templates
 
-from . import __version__, bodycomp, config, db, grading, mqtt, notify
+from . import __version__, bodycomp, config, db, grading, notify
 
 BASE = Path(__file__).parent
 templates = Jinja2Templates(directory=str(BASE / "templates"))
@@ -68,21 +68,6 @@ def ctx(request: Request, **kw) -> dict:
             "user": getattr(request.state, "user", "")}
     base.update(kw)
     return base
-
-
-def _device_status() -> dict:
-    row = db.one("SELECT mac, kind, at FROM device_events ORDER BY at DESC LIMIT 1")
-    last = row["at"] if row else None
-    online = False
-    if last:
-        from datetime import datetime
-        try:
-            delta = (datetime.now().astimezone()
-                     - datetime.fromisoformat(last)).total_seconds()
-            online = delta < 300  # 5 分钟内有心跳算在线
-        except ValueError:
-            pass
-    return {"mac": row["mac"] if row else None, "last_at": last, "online": online}
 
 
 # grading 等级 → CSS 类
@@ -303,8 +288,8 @@ def _goal_view(member_id: int, current: float | None) -> dict | None:
     if not view["done"]:
         rows = db.query("SELECT measured_at, weight_centi_kg FROM measurements "
                         "WHERE member_id=? AND excluded=0 "
-                        "AND measured_at >= datetime('now','-30 day') "
-                        "ORDER BY measured_at", (member_id,))
+                        "AND measured_at >= ? "
+                        "ORDER BY measured_at", (member_id, db.cutoff_iso(30)))
         view["eta_note"] = None
         if len(rows) < 4:
             view["eta_note"] = "数据不足，暂不预测"

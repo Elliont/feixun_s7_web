@@ -22,11 +22,40 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
 from . import __version__, bodycomp, config, db, fatstandards, grading, notify
-from .ui import (_age, _goal_view, _human_since, _row, _slope_per_day,
+from .ui import (_age, _goal_view, _human_since, _row,
                  csrf_token, ctx, templates)
 
 log = logging.getLogger("s7.pages")
 HASHER = PasswordHasher()
+
+
+def _safe_back(value: str, default: str = "/") -> str:
+    """只接受站内相对路径，防开放重定向（登录 next / 各回跳 back 统一走这里）。"""
+    b = (value or "").strip()
+    if b.startswith("/") and not b.startswith("//") and "\\" not in b \
+            and "\r" not in b and "\n" not in b:
+        return b
+    return default
+
+
+def _prune_backups() -> None:
+    """按 backup_keep_days 清理 data/backup 下过期的 .db 存档，避免卷被写满。"""
+    try:
+        days = int(db.get_setting("backup_keep_days", "30"))
+    except (TypeError, ValueError):
+        days = 30
+    if days <= 0:
+        return
+    cutoff = time.time() - days * 86400
+    bdir = config.DATA_DIR / "backup"
+    if not bdir.exists():
+        return
+    for p in bdir.glob("*.db"):
+        try:
+            if p.is_file() and p.stat().st_mtime < cutoff:
+                p.unlink()
+        except OSError:
+            pass
 PUBLIC = ("/login", "/setup", "/static", "/healthz", "/manifest.json", "/sw.js",
           "/favicon.ico")
 LOGIN_MAX, LOGIN_WINDOW = 5, 300
@@ -116,8 +145,21 @@ def check_login(username: str, password: str) -> bool:
 def _rate_limited(ip: str) -> bool:
     now = time.time()
     hits = [t for t in _attempts.get(ip, []) if now - t < LOGIN_WINDOW]
-    _attempts[ip] = hits
+    if hits:
+        _attempts[ip] = hits
+    else:                                # 过期即回收 key，避免被扫描时内存只涨不降
+        _attempts.pop(ip, None)
     return len(hits) >= LOGIN_MAX
+
+
+def _client_ip(request: Request) -> str:
+    """限流键：可信反代后的 XFF 首段优先，否则回退 socket 对端。"""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        first = xff.split(",", 1)[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "?"
 
 
 # ================================================================ 记录页
@@ -171,53 +213,10 @@ def _record_rows(rows, members_by_id):
             "bfr": comp.get("body_fat_percent"), "bmi": comp.get("bmi"),
             "visceral": comp.get("visceral_level"), "score": comp.get("body_score"),
             "has_fat": bool(comp.get("has_body_fat")),
-            "state": r["match_state"], "score": r["match_score"],
+            "state": r["match_state"], "match": r["match_score"],
             "excluded": r["excluded"], "source": r["source"],
         })
     return out
-
-
-# ================================================================ 趋势图（服务端 SVG）
-
-def _chart(series, width=1160, height=420, pad_l=52, pad_r=18, pad_t=18, pad_b=34) -> dict | None:
-    """series: [{name, color, points:[(ts, value)]}] → SVG 几何数据"""
-    pts = [p for s in series for p in s["points"]]
-    if not pts:
-        return None
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    x0, x1 = min(xs), max(xs)
-    y0, y1 = min(ys), max(ys)
-    if x1 == x0:
-        x1 = x0 + 1
-    pad = (y1 - y0) * 0.12 or 1
-    y0, y1 = y0 - pad, y1 + pad
-    iw, ih = width - pad_l - pad_r, height - pad_t - pad_b
-
-    def sx(t):
-        return pad_l + iw * (t - x0) / (x1 - x0)
-
-    def sy(v):
-        return pad_t + ih * (1 - (v - y0) / (y1 - y0))
-
-    lines = []
-    for s in series:
-        if not s["points"]:
-            continue
-        coords = [(round(sx(t), 1), round(sy(v), 1)) for t, v in s["points"]]
-        lines.append({"name": s["name"], "color": s["color"],
-                      "points": " ".join(f"{x},{y}" for x, y in coords),
-                      "dots": coords, "last": round(s["points"][-1][1], 1)})
-    ticks = []
-    for i in range(4):
-        v = y0 + (y1 - y0) * i / 3
-        ticks.append({"y": round(sy(v), 1), "label": round(v, 1)})
-    d0 = datetime.fromtimestamp(x0).strftime("%m-%d")
-    d1 = datetime.fromtimestamp(x1).strftime("%m-%d")
-    return {"width": width, "height": height, "lines": lines, "ticks": ticks,
-            "x0": pad_l, "x1": width - pad_r, "y0": pad_t, "y1": height - pad_b,
-            "date0": d0, "date1": d1}
-
 
 
 # ================================================================ 注册路由
@@ -243,12 +242,26 @@ def register(app: FastAPI) -> None:
         if request.method in ("POST", "PUT", "PATCH", "DELETE") and not config.DEV_NOAUTH:
             cookie = csrf_tok
             form_tok = ""
-            if request.headers.get("content-type", "").startswith(
-                    ("application/x-www-form-urlencoded", "multipart/form-data")):
+            content_type = request.headers.get("content-type", "")
+            if content_type.startswith("application/x-www-form-urlencoded"):
                 body = await request.body()
                 from urllib.parse import parse_qs
                 form_tok = (parse_qs(body.decode(errors="ignore")).get("csrf") or [""])[0]
                 request._body = body  # 供下游再次读取
+            elif content_type.startswith("multipart/form-data"):
+                # parse_qs 无法解析 multipart；按 MIME 部件提取 csrf。
+                # 仅读取并缓存原始 body，不消费流，下游 File(...)/form() 照常解析上传文件。
+                body = await request.body()
+                request._body = body
+                from email.parser import BytesParser
+                from email.policy import default as _email_policy
+                _msg = BytesParser(policy=_email_policy).parsebytes(
+                    ("Content-Type: %s\r\nMIME-Version: 1.0\r\n\r\n" % content_type).encode("latin-1")
+                    + body)
+                for _part in _msg.iter_parts():
+                    if _part.get_param("name", header="content-disposition") == "csrf":
+                        form_tok = (_part.get_payload(decode=True) or b"").decode(errors="ignore")
+                        break
             header_tok = request.headers.get("x-csrf-token", "")
             if not cookie or cookie not in (form_tok, header_tok):
                 return Response("CSRF 校验失败，请刷新页面重试", status_code=403)
@@ -256,7 +269,8 @@ def register(app: FastAPI) -> None:
         response = await call_next(request)
         # CSRF cookie
         if request.cookies.get("csrf") != csrf_tok:
-            response.set_cookie("csrf", csrf_tok, samesite="lax", max_age=86400 * 30)
+            response.set_cookie("csrf", csrf_tok, samesite="lax",
+                                secure=config.COOKIE_SECURE, max_age=86400 * 30)
         # 安全头
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -298,6 +312,7 @@ def register(app: FastAPI) -> None:
                        "exp": time.time() + config.SESSION_DAYS * 86400})
         resp = RedirectResponse("/", status_code=303)
         resp.set_cookie("sess", token, httponly=True, samesite="lax",
+                        secure=config.COOKIE_SECURE,
                         max_age=config.SESSION_DAYS * 86400)
         log.info("已创建管理员账号 %s", name)
         return resp
@@ -314,7 +329,8 @@ def register(app: FastAPI) -> None:
     @app.post("/login")
     def login_submit(request: Request, username: str = Form(""),
                      password: str = Form(""), next: str = Form("/")):
-        ip = request.client.host if request.client else "?"
+        next = _safe_back(next)           # 防开放重定向：仅站内相对路径
+        ip = _client_ip(request)
         if _rate_limited(ip):
             return RedirectResponse(f"/login?err=2&next={next}", status_code=303)
         if not check_login(username.strip(), password):
@@ -325,8 +341,9 @@ def register(app: FastAPI) -> None:
         token = _sign({"u": username.strip(), "v": row["token_version"],
                        "exp": time.time() + config.SESSION_DAYS * 86400})
         db.audit("login.ok", None, username[:20])
-        resp = RedirectResponse(next or "/", status_code=303)
+        resp = RedirectResponse(next, status_code=303)
         resp.set_cookie("sess", token, httponly=True, samesite="lax",
+                        secure=config.COOKIE_SECURE,
                         max_age=config.SESSION_DAYS * 86400)
         return resp
 
@@ -378,11 +395,11 @@ def register(app: FastAPI) -> None:
                "state": state}))
 
     @app.get("/records/new", response_class=HTMLResponse)
-    def record_new(request: Request, member: str = "", err: int = 0):
+    def record_new(request: Request, member: str = "", err: int = 0, dup: int = 0):
         members = [dict(m) for m in db.active_members()]
         now = datetime.now().strftime("%Y-%m-%dT%H:%M")
         return templates.TemplateResponse("record_form.html", ctx(
-            request, members=members, err=err, now=now, sel=member))
+            request, members=members, err=err, dup=dup, now=now, sel=member))
 
     @app.post("/records/new")
     def record_create(request: Request, member_id: int = Form(0),
@@ -408,7 +425,7 @@ def register(app: FastAPI) -> None:
             imp = 0.0
 
         mid = member_id or None
-        db.execute(
+        cur = db.conn().execute(
             """INSERT OR IGNORE INTO measurements(
                    member_id, device_mac, measured_at, weight_centi_kg, impedances,
                    impedance_used_ohm, data_type, source, match_state, created_at)
@@ -416,11 +433,16 @@ def register(app: FastAPI) -> None:
             (mid, "MANUAL", at.isoformat(), int(round(w * 100)),
              str(int(imp * 10)) if imp else "", imp, 1 if imp else 0,
              "manual", "confirmed" if mid else "unassigned", db.now_iso()))
-        db.audit("measure.create", str(mid or "-"), f"{w}kg @ {at:%Y-%m-%d %H:%M}")
-        return RedirectResponse("/records?ok=1", status_code=303)
+        if cur.rowcount:
+            db.audit("measure.create", str(mid or "-"), f"{w}kg @ {at:%Y-%m-%d %H:%M}")
+            return RedirectResponse("/records?ok=1", status_code=303)
+        # UNIQUE 命中：确实没写进去，不能谎报成功（与 CSV 导入的行为保持一致）
+        db.audit("measure.create.dup", str(mid or "-"), f"{w}kg @ {at:%Y-%m-%d %H:%M}")
+        return RedirectResponse("/records/new?dup=1", status_code=303)
 
     @app.post("/measurements/{mid}/assign")
     def measure_assign(mid: int, member_id: str = Form(""), back: str = Form("/records")):
+        back = _safe_back(back, "/records")
         # 下拉选「＋ 新增成员」→ 去新增页，建完自动认领这条（claim）
         if member_id == "new":
             return RedirectResponse(f"/members/new?claim={mid}&back={back}", status_code=303)
@@ -434,14 +456,14 @@ def register(app: FastAPI) -> None:
     def measure_exclude(mid: int, value: int = Form(1), back: str = Form("/records")):
         db.execute("UPDATE measurements SET excluded=? WHERE id=?", (1 if value else 0, mid))
         db.audit("measure.exclude", str(mid), str(value))
-        return RedirectResponse(back, status_code=303)
+        return RedirectResponse(_safe_back(back, "/records"), status_code=303)
 
     @app.post("/measurements/{mid}/delete")
     def measure_delete(mid: int, back: str = Form("/records")):
         # 软删除：先进回收站，14 天后自动清理，期间可还原
         moved = db.trash_move(mid)
         db.audit("measure.trash", str(mid), "ok" if moved else "missing")
-        return RedirectResponse(back, status_code=303)
+        return RedirectResponse(_safe_back(back, "/records"), status_code=303)
 
     # ---------------- 回收站
 
@@ -491,10 +513,8 @@ def register(app: FastAPI) -> None:
 
     # ---------------- 设置
 
-    SETTING_KEYS = ("grading", "match_auto_kg", "match_pending_kg",
-                    "notify_enabled", "notify_events", "pushplus_token",
-                    "mqtt_enabled", "mqtt_host", "mqtt_port", "mqtt_user",
-                    "mqtt_password", "mqtt_topic")
+    SETTING_KEYS = ("grading", "match_auto_kg",
+                    "notify_enabled", "notify_events", "pushplus_token")
 
     @app.get("/settings", response_class=HTMLResponse)
     def settings_page(request: Request, ok: int = 0, err: int = 0):
@@ -517,11 +537,6 @@ def register(app: FastAPI) -> None:
             db.set_setting("notify_events",
                            ",".join(str(v).strip() for v in form.getlist("notify_events")
                                     if str(v).strip()))
-        elif fid == "mqtt":
-            db.set_setting("mqtt_enabled", "1" if form.getlist("mqtt_enabled") else "0")
-            for k in ("mqtt_host", "mqtt_port", "mqtt_user", "mqtt_password", "mqtt_topic"):
-                if k in form:
-                    db.set_setting(k, str(form[k]).strip())
         else:
             for k in ("match_auto_kg",):
                 if k in form:
@@ -559,6 +574,7 @@ def register(app: FastAPI) -> None:
         out.close()
         src.close()
         db.audit("backup.create", name)
+        _prune_backups()
         return FileResponse(str(dst), filename=name, media_type="application/octet-stream")
 
     @app.post("/admin/restore")
@@ -594,6 +610,7 @@ def register(app: FastAPI) -> None:
 
             db.ensure_schema()          # 老备份可能缺新列，补一下
             db.audit("backup.restore", file.filename or "-", f"{len(raw)} bytes")
+            _prune_backups()
         finally:
             tmp.unlink(missing_ok=True)
         return RedirectResponse("/settings?ok=5", status_code=303)
@@ -622,7 +639,6 @@ def register(app: FastAPI) -> None:
 
     @app.get("/device", response_class=HTMLResponse)
     def device_page(request: Request, mac: str = "", ok: int = 0):
-        whitelist = db.get_setting("device_mac_whitelist", "")
         last = db.one("SELECT mac, kind, at FROM device_events ORDER BY at DESC LIMIT 1")
         today = db.one("SELECT COUNT(*) AS n FROM measurements "
                        "WHERE date(measured_at)=date('now','localtime')")
@@ -684,7 +700,6 @@ def register(app: FastAPI) -> None:
         sel = next((d for d in devices if d["mac"] == mac.upper()), devices[0] if devices else None)
         return templates.TemplateResponse("device.html", ctx(
             request, devices=devices, sel=sel, members=members, ok=ok,
-            whitelist=whitelist or "不限",
             last_event=_human_since(last["at"]) if last else None,
             today_reports=today["n"] if today else 0,
             self_ip=os.environ.get("S7_PUBLIC_ADDR", "127.0.0.1:30101")))
@@ -811,7 +826,9 @@ def register(app: FastAPI) -> None:
                 " weight_centi_kg, impedances, impedance_used_ohm, data_type, source,"
                 " match_state, created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
                 (mid, "IMPORT", at.isoformat(), int(round(w * 100)),
-                 str(int(imp)) if imp else "", imp, 1 if imp else 0,
+                 # impedances 统一存 0.1Ω（与帧原始值/补录一致，读取方按 /10 换算）；
+                 # imp 本身是 Ω，故 *10。
+                 str(int(imp * 10)) if imp else "", imp, 1 if imp else 0,
                  "import", "confirmed", db.now_iso()))
             if cur.rowcount:
                 added += 1
@@ -827,7 +844,16 @@ def register(app: FastAPI) -> None:
         head = ["时间", "成员", "体重kg", "阻抗Ω", "BMI", "体脂%", "脂肪量kg", "去脂体重kg",
                 "肌肉量kg", "骨骼肌kg", "水分%", "蛋白质kg", "内脏脂肪",
                 "代谢年龄", "身体评分", "体型", "来源", "状态"]
-        lines = [",".join(head)]
+        def _cell(v):
+            """防 CSV/Excel 公式注入：以 = + - @ 或控制字符开头时加单引号前缀。"""
+            s = "" if v is None else str(v)
+            if s and s[0] in "=+-@\t\r":
+                return "'" + s
+            return s
+
+        buf = io.StringIO()
+        writer = csv.writer(buf, lineterminator="\r\n")
+        writer.writerow(head)
         for r in rows:
             m = members.get(r["member_id"])
             w = r["weight_centi_kg"] / 100.0
@@ -836,7 +862,7 @@ def register(app: FastAPI) -> None:
                 c = bodycomp.build(w, m["height_cm"], m.get("birth_year"), m["sex"],
                                    r["impedance_used_ohm"] or 0,
                                    birth_date=m.get("birth_date"))
-            lines.append(",".join(str(x) for x in [
+            writer.writerow([_cell(x) for x in [
                 r["measured_at"][:16].replace("T", " "), m["name"] if m else "待分配",
                 round(w, 1), r["impedance_used_ohm"] or "", c.get("bmi", ""),
                 c.get("body_fat_percent", ""), c.get("fat_mass_kg", ""),
@@ -844,8 +870,8 @@ def register(app: FastAPI) -> None:
                 c.get("water_percent", ""), c.get("protein_kg", ""),
                 c.get("visceral_level", ""),
                 c.get("metabolic_age", ""), c.get("body_score", ""), c.get("body_type", ""),
-                r["source"], r["match_state"]]))
-        body = "\ufeff" + "\r\n".join(lines) + "\r\n"
+                r["source"], r["match_state"]]])
+        body = "\ufeff" + buf.getvalue()
         return Response(body, media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition":
                                  'attachment; filename="measurements.csv"'})

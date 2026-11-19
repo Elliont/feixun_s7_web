@@ -87,7 +87,9 @@ def compute(weight_kg: float, height_cm: float, age: int, male: bool,
 
     protein = slm - tf
     bone = _clamp(lbm - slm, 1.0, 4.0)
-    inf = tf - 0.06 * w - 0.07 * h * h / Z - 3.69
+    # Z 在阻抗相对体重偏低时会落到 0 或负数（如 R=150Ω/w≥125kg），
+    # 直接除会抛 ZeroDivisionError 拖垮所有渲染页；此处按 0 兜底。
+    inf = (tf - 0.06 * w - 0.07 * h * h / Z - 3.69) if Z > 0 else 0.0
 
     # ---- 内脏等级（0.5 步长）----
     if male:
