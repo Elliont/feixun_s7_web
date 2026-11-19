@@ -73,35 +73,13 @@
 
 ### 把数据库映射到宿主机
 
-默认用 Docker 命名卷 `s7data` 存放数据库，文件不在宿主机目录里。若想直接看到数据库文件、方便备份，直接编辑 `compose.yml`：`ingest` 和 `web` 两个服务各有一行 `volumes`，把其中的
+默认用 Docker 命名卷，数据库不在宿主机目录里。若想直接看到数据库文件，编辑 `compose.yml`，把 `ingest` 和 `web` 两个服务的 `volumes` 都改成：
 
 ```yaml
-      - s7data:/data
+      - ./data:/data    # 原为 s7data:/data，两处都要改
 ```
 
-改为
-
-```yaml
-      - ./data:/data
-```
-
-两处都要改。执行 `docker compose up -d` 后，数据库文件就位于项目目录下的 `data/s7.db`。
-
-> 以后 `git pull` 升级时留意这处本地改动，别被覆盖即可。
-
-首次从原命名卷迁移时，先执行：
-
-```bash
-mkdir -p data
-docker run --rm -v s7_s7data:/source -v "$PWD/data":/dest alpine cp -a /source/. /dest/
-```
-
-映射出来后确实可以直接拷贝数据库文件，但要注意 SQLite 的 **WAL 模式**：服务运行时，最近的写入可能还在 `data/s7.db-wal` 里、没合并进 `s7.db`。拷贝时有两种稳妥做法：
-
-- **推荐**：用网页「设置」页的一键备份，拿到的是完整一致的数据库；
-- **手动拷**：先 `docker compose stop`，再把整个 `data/` 目录（`s7.db`、`s7.db-wal`、`s7.db-shm` 一起）复制走。只拷运行中的 `s7.db` 单文件可能丢最近几条记录。
-
-> 升级只会补新表/新列，老库直接能用。**升级前先备份**，这是唯一的好习惯。
+再执行 `docker compose up -d`，数据库文件就位于项目目录下的 `data/s7.db`。以后 `git pull` 升级时留意这处本地改动，别被覆盖。
 
 ## 数据与备份
 
