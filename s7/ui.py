@@ -88,9 +88,11 @@ def _member_card(m: dict) -> dict:
         weight = latest["weight_centi_kg"] / 100.0
         md = _row(m)
         male = md["sex"] == "male"
+        at_date = bodycomp.date_of_iso(latest["measured_at"])
         comp = bodycomp.build(weight, md["height_cm"], md.get("birth_year"),
                               md["sex"], latest["impedance_used_ohm"] or 0,
-                              birth_date=md.get("birth_date"))
+                              birth_date=md.get("birth_date"), at=at_date)
+        comp_age = comp.get("age", card["age"])
         card.update({
             "weight_kg": round(weight, 2),
             "measured_at": latest["measured_at"],
@@ -109,24 +111,35 @@ def _member_card(m: dict) -> dict:
             lv["bmi"] = _LV_CLASS.get(grading.bmi_level(comp["bmi"])[0], "")
         if comp.get("has_body_fat"):
             lv["bfr"] = _LV_CLASS.get(
-                grading.fat_level(comp["body_fat_percent"], male, card["age"])[0], "")
+                grading.fat_level(comp["body_fat_percent"], male, comp_age)[0], "")
             lv["vfr"] = _LV_CLASS.get(grading.visceral_level(comp["visceral_level"])[0], "")
             lv["score"] = _LV_CLASS.get(grading.score_level(comp["body_score"])[0], "")
             lv["bage"] = _LV_CLASS.get(
-                grading.metabolic_age_level(comp["metabolic_age"], card["age"])[0], "")
+                grading.metabolic_age_level(comp["metabolic_age"], comp_age)[0], "")
         card["lv"] = lv
     goal = db.one(
         "SELECT * FROM goals WHERE member_id=? AND is_active=1 AND kind='weight' "
         "ORDER BY id DESC LIMIT 1", (m["id"],))
     if goal and card["weight_kg"] is not None:
-        start = goal["start_value"] or card["weight_kg"]
+        cur_w = card["weight_kg"]
+        start = goal["start_value"] if goal["start_value"] is not None else cur_w
         target = goal["target_value"]
-        span = start - target
-        done = start - card["weight_kg"]
+        gain = target > start
+        done = (cur_w >= target) if gain else (cur_w <= target)
+        span = target - start
+        if done:
+            prog = 100.0
+        elif span == 0:
+            prog = 0.0
+        else:
+            prog = max(0.0, min(100.0, (cur_w - start) / span * 100.0))
+        remain = round((target - cur_w) if gain else (cur_w - target), 1)
         card["goal"] = {
             "target": target,
-            "delta": round(card["weight_kg"] - target, 1),
-            "progress": 0 if span <= 0 else max(0, min(100, done / span * 100)),
+            "delta": remain,
+            "done": done,
+            "gain": gain,
+            "progress": prog,
             "deadline": goal["deadline"],
         }
     return card
@@ -141,9 +154,11 @@ def _recent_rows(limit: int = 8) -> list[dict]:
     out = []
     for r in rows:
         w_kg = r["weight_centi_kg"] / 100.0
-        age = bodycomp.age_of_date(r["birth_date"], r["birth_year"])
+        at_date = bodycomp.date_of_iso(r["measured_at"])
         comp = bodycomp.build(w_kg, r["height_cm"], r["birth_year"], r["sex"],
-                              r["impedance_used_ohm"] or 0, birth_date=r["birth_date"])
+                              r["impedance_used_ohm"] or 0, birth_date=r["birth_date"],
+                              at=at_date)
+        age = comp.get("age") or bodycomp.age_of_date(r["birth_date"], r["birth_year"], today=at_date)
         fat = bool(comp.get("has_body_fat"))
         out.append({
             "id": r["id"], "mid": r["mid"], "name": r["name"], "color": r["color"],
@@ -277,13 +292,16 @@ def _goal_view(member_id: int, current: float | None) -> dict | None:
             "eta": None, "done": False}
     if current is None:
         return view
-    span = (start - target) if start is not None else 0
-    if span > 0:
-        view["progress"] = max(0.0, min(1.0, (start - current) / span))
-    elif current <= target:
+    gain = (start is not None and target > start)
+    done = (current >= target) if gain else (current <= target)
+    span = (target - start) if start is not None else 0.0
+    if done:
         view["progress"] = 1.0
-    view["remain"] = round(current - target, 1)
-    view["done"] = current <= target
+    elif span != 0:
+        view["progress"] = max(0.0, min(1.0, (current - start) / span))
+    view["remain"] = round((target - current) if gain else (current - target), 1)
+    view["done"] = done
+    view["gain"] = gain
 
     if not view["done"]:
         rows = db.query("SELECT measured_at, weight_centi_kg FROM measurements "
@@ -304,14 +322,14 @@ def _goal_view(member_id: int, current: float | None) -> dict | None:
             slope = _slope_per_day(rows)
             if span_days < 5:
                 view["eta_note"] = "观察期不足 5 天，暂不预测"
-            elif not slope or slope > -0.01:
+            elif gain and (not slope or slope < 0.01):
+                view["eta_note"] = "近 30 天无明显上升趋势"
+            elif (not gain) and (not slope or slope > -0.01):
                 view["eta_note"] = "近 30 天无明显下降趋势"
             else:
-                days = (current - target) / (-slope)
-                if days < 7:
-                    view["eta_note"] = "趋势波动较大，暂不预测"
-                elif days > 730:
+                days = ((target - current) / slope) if gain else ((current - target) / (-slope))
+                if days > 730:
                     view["eta_note"] = "按当前速度超过 2 年，建议加强"
                 else:
-                    view["eta"] = int(round(days))
+                    view["eta"] = max(1, int(round(days)))
     return view

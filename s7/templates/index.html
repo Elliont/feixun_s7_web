@@ -100,7 +100,7 @@
       <span class="member-meta">{{ "男" if m.sex == "male" else "女" }} · {{ m.age }} 岁 · {{ m.height_cm }} cm</span>
       <span class="ring">
         {% if m.goal %}
-          {% set done = m.goal.delta <= 0 %}
+          {% set done = m.goal.done %}
           {% set pct = 100 if done else (m.goal.progress if m.goal.progress >= 1 else 1) %}
         <svg width="52" height="52" viewBox="0 0 52 52" aria-hidden="true">
           <circle cx="26" cy="26" r="23" fill="none" stroke="#E9EDF1" stroke-width="5.5"/>
@@ -131,7 +131,7 @@
       <span class="foot-goal">
         {%- if m.match_state in ("pending", "unassigned") -%}
         <span class="member-warn">这条还没分配</span> <a class="goal-link" href="#pending">去分配 →</a>
-        {%- elif m.goal and m.goal.delta <= 0 -%}
+        {%- elif m.goal and m.goal.done -%}
         <a class="goal-link goal done" href="/members/{{ m.id }}#goal">目标已达成 ✓</a>
         {%- elif m.goal -%}
         <a class="goal-link goal num" href="/members/{{ m.id }}#goal">距目标 {{ "%.1f"|format(m.goal.delta) }} kg</a>

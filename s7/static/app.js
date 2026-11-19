@@ -77,12 +77,13 @@
     });
   });
 
-  // 自动提交：data-autosubmit 可放在 form 上（表单内任意控件 change 即提交），
-  // 也可放在单个控件上（如每页条数下拉，选中即提交）
-  document.querySelectorAll('[data-autosubmit]').forEach((el) => {
-    const form = el.tagName === 'FORM' ? el : el.form;
-    if (!form) return;
-    el.addEventListener('change', () => form.submit());
+  // 自动提交：用事件委托兼容 #rec-wrap 局部刷新后新插入的表单/控件
+  document.addEventListener('change', (e) => {
+    const el = e.target;
+    const target = el.closest && el.closest('[data-autosubmit]');
+    if (!target) return;
+    const form = target.tagName === 'FORM' ? target : target.form;
+    if (form) form.submit();
   });
 
   // 用户菜单：点击菜单外任意处收起（details 不会自动关闭）
@@ -102,7 +103,9 @@
   /* ---------- 步进器（[−] 值 [+]） ---------- */
   document.querySelectorAll('.stepper').forEach((box) => {
     const input = box.querySelector('input');
-    const step = Number(box.dataset.step || 1);
+    const stepStr = box.dataset.step || '1';
+    const step = Number(stepStr);
+    const decimals = (stepStr.split('.')[1] || '').length;
     const min = Number(box.dataset.min || 0);
     const max = Number(box.dataset.max || 9999);
     const optional = box.dataset.optional === '1';
@@ -112,7 +115,8 @@
       const cur = input.value === '' ? min : Number(input.value);
       let v = cur + delta;
       v = Math.max(min, Math.min(max, v));
-      input.value = v;
+      // 按步长小数位舍入，避免 60.2 + 0.1 = 60.300000000000004 触发 HTML5 step 校验失败
+      input.value = decimals > 0 ? Number(v.toFixed(decimals)) : Math.round(v);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     };
     box.querySelector('[data-minus]').addEventListener('click', () => apply(-step));
@@ -128,11 +132,11 @@
     || '说明';
 
   function toggleTip(q) {
-    if (tipEl && tipEl.dataset.for === q) { hideTip(); return; }
+    if (tipEl && tipEl._for === q) { hideTip(); return; }
     hideTip();
     tipEl = document.createElement('div');
     tipEl.className = 'tip-pop';
-    tipEl.dataset.for = q;
+    tipEl._for = q;
     const b = document.createElement('b');
     b.textContent = tipLabelOf(q);
     tipEl.appendChild(b);
@@ -305,7 +309,16 @@
       const padV = (hi - lo) * 0.14;
       lo -= padV; hi += padV;
 
-      const xs = pts.map((_, i) => padL + (pts.length === 1 ? 0 : iw * i / (pts.length - 1)));
+      // X 轴按真实时间戳比例映射，避免疏密不均的称重扭曲趋势斜率
+      const ts = pts.map(p => Date.parse(String(p.t || '').replace(' ', 'T')));
+      const validTs = ts.every(Number.isFinite);
+      const tMin = validTs ? ts[0] : 0;
+      const tSpan = validTs ? (ts[ts.length - 1] - tMin) : 0;
+      const xs = pts.map((_, i) => {
+        if (pts.length === 1) return padL;
+        if (validTs && tSpan > 0) return padL + iw * (ts[i] - tMin) / tSpan;
+        return padL + iw * i / (pts.length - 1);
+      });
       const ys = vals.map(v => padT + ih * (1 - (v - lo) / (hi - lo)));
       const X = i => xs[i], Y = i => ys[i];
 
@@ -343,6 +356,10 @@
       const grad = svgEl('linearGradient', { id: gid, x1: 0, y1: 0, x2: 0, y2: 1 });
       const s1 = svgEl('stop', { offset: '0%', 'stop-color': color, 'stop-opacity': .22 });
       const s2 = svgEl('stop', { offset: '100%', 'stop-color': color, 'stop-opacity': 0 });
+      grad.appendChild(s1);
+      grad.appendChild(s2);
+      defs.appendChild(grad);
+      svg.appendChild(defs);
 
       const area = svgEl('path', { d: areaD, fill: `url(#${gid})`, class: 'chart-area' });
       const line = svgEl('path', {

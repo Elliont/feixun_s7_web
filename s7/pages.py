@@ -15,6 +15,7 @@ import sqlite3
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from urllib.parse import quote
 
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
@@ -153,12 +154,15 @@ def _rate_limited(ip: str) -> bool:
 
 
 def _client_ip(request: Request) -> str:
-    """限流键：可信反代后的 XFF 首段优先，否则回退 socket 对端。"""
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        first = xff.split(",", 1)[0].strip()
-        if first:
-            return first
+    """限流键：默认取直连 socket 对端，避免伪造 XFF 绕过限流；
+    仅在显式配置 S7_TRUST_PROXY=1（部署于可信反代后）时读取 X-Forwarded-For 末段。
+    """
+    if config.TRUST_PROXY:
+        xff = request.headers.get("x-forwarded-for", "")
+        if xff:
+            last = xff.rsplit(",", 1)[-1].strip()
+            if last:
+                return last
     return request.client.host if request.client else "?"
 
 
@@ -205,7 +209,8 @@ def _record_rows(rows, members_by_id):
         if m:
             comp = bodycomp.build(w, m["height_cm"], m.get("birth_year"), m["sex"],
                                   r["impedance_used_ohm"] or 0,
-                                  birth_date=m.get("birth_date"))
+                                  birth_date=m.get("birth_date"),
+                                  at=bodycomp.date_of_iso(r["measured_at"]))
         out.append({
             "id": r["id"], "measured_at": r["measured_at"][:16].replace("T", " "),
             "weight": round(w, 1), "member": m["name"] if m else None,
@@ -237,7 +242,8 @@ def register(app: FastAPI) -> None:
         if not config.DEV_NOAUTH and not path.startswith(PUBLIC):
             if not user:
                 target = "/login" if admin_exists() else "/setup"
-                return RedirectResponse(f"{target}?next={path}", status_code=303)
+                full_next = f"{path}?{request.url.query}" if request.url.query else path
+                return RedirectResponse(f"{target}?next={quote(full_next, safe='')}", status_code=303)
         # CSRF（写操作）
         if request.method in ("POST", "PUT", "PATCH", "DELETE") and not config.DEV_NOAUTH:
             cookie = csrf_tok
@@ -332,11 +338,11 @@ def register(app: FastAPI) -> None:
         next = _safe_back(next)           # 防开放重定向：仅站内相对路径
         ip = _client_ip(request)
         if _rate_limited(ip):
-            return RedirectResponse(f"/login?err=2&next={next}", status_code=303)
+            return RedirectResponse(f"/login?err=2&next={quote(next, safe='')}", status_code=303)
         if not check_login(username.strip(), password):
             _attempts.setdefault(ip, []).append(time.time())
             db.audit("login.fail", None, username[:20])
-            return RedirectResponse(f"/login?err=1&next={next}", status_code=303)
+            return RedirectResponse(f"/login?err=1&next={quote(next, safe='')}", status_code=303)
         row = db.one("SELECT token_version FROM admin WHERE id=1")
         token = _sign({"u": username.strip(), "v": row["token_version"],
                        "exp": time.time() + config.SESSION_DAYS * 86400})
@@ -380,7 +386,8 @@ def register(app: FastAPI) -> None:
         rows, total, page, pages = _filtered_records(
             member, date_from, date_to, state, page, size)
         members = [dict(m) for m in db.active_members()]
-        by_id = {m["id"]: m for m in members}
+        # 展示历史记录用全部成员（含已停用），避免停用成员的历史数据丢失姓名与体成分
+        by_id = {m["id"]: dict(m) for m in db.all_members()}
         cols = [{"key": k, "label": label, "unit": unit, "on": k in chosen}
                 for k, label, unit in REC_COL_SPEC]
         base_qs = (f"size={size}" + "".join(f"&rc={k}" for k in chosen)
@@ -445,7 +452,7 @@ def register(app: FastAPI) -> None:
         back = _safe_back(back, "/records")
         # 下拉选「＋ 新增成员」→ 去新增页，建完自动认领这条（claim）
         if member_id == "new":
-            return RedirectResponse(f"/members/new?claim={mid}&back={back}", status_code=303)
+            return RedirectResponse(f"/members/new?claim={mid}&back={quote(back, safe='')}", status_code=303)
         target = int(member_id) if member_id.isdigit() else None
         db.execute("UPDATE measurements SET member_id=?, match_state=? WHERE id=?",
                    (target, "confirmed" if target else "unassigned", mid))
@@ -485,7 +492,7 @@ def register(app: FastAPI) -> None:
     @app.get("/trash", response_class=HTMLResponse)
     def trash_page(request: Request, ok: int = -1):
         purged = db.trash_purge()
-        names = {m["id"]: m["name"] for m in db.active_members()}
+        names = {m["id"]: m["name"] for m in db.all_members()}
         rows = [_trash_view(r) for r in db.trash_rows()]
         for r in rows:
             r["member"] = names.get(r["member_id"]) or "待分配"
@@ -538,9 +545,15 @@ def register(app: FastAPI) -> None:
                            ",".join(str(v).strip() for v in form.getlist("notify_events")
                                     if str(v).strip()))
         else:
-            for k in ("match_auto_kg",):
-                if k in form:
-                    db.set_setting(k, str(form[k]).strip())
+            if "match_auto_kg" in form:
+                raw_kg = str(form["match_auto_kg"]).strip()
+                try:
+                    val_kg = float(raw_kg)
+                    if not (0.1 <= val_kg <= 20.0):
+                        return RedirectResponse("/settings?err=5", status_code=303)
+                except ValueError:
+                    return RedirectResponse("/settings?err=5", status_code=303)
+                db.set_setting("match_auto_kg", f"{val_kg:g}")
             if "grading" in form:
                 std = str(form["grading"]).strip().lower()
                 if std in fatstandards.STANDARDS:
@@ -551,7 +564,7 @@ def register(app: FastAPI) -> None:
 
     @app.post("/settings/test-notify")
     def settings_test_notify():
-        ok = notify.send("test", {"msg": "这是一条测试通知"})
+        ok = notify.send("test", {"msg": "这是一条测试通知"}, force=True)
         return RedirectResponse(f"/settings?ok={2 if ok else 3}", status_code=303)
 
     # ---------------- 管理
@@ -587,10 +600,13 @@ def register(app: FastAPI) -> None:
         tmp = config.DATA_DIR / "backup" / "_restore_upload.db"
         tmp.write_bytes(raw)
         try:
-            probe = sqlite3.connect(str(tmp))
-            tables = {r[0] for r in probe.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")}
-            probe.close()
+            try:
+                probe = sqlite3.connect(str(tmp))
+                tables = {r[0] for r in probe.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                probe.close()
+            except sqlite3.DatabaseError:
+                return RedirectResponse("/settings?err=3", status_code=303)
             if not {"measurements", "members"} <= tables:
                 return RedirectResponse("/settings?err=4", status_code=303)
 
@@ -609,6 +625,8 @@ def register(app: FastAPI) -> None:
             live.close()
 
             db.ensure_schema()          # 老备份可能缺新列，补一下
+            fatstandards.invalidate()   # 刷新体脂判定标准缓存
+            ensure_secret()             # 同步恢复库中的会话密钥（未设环境变量时）
             db.audit("backup.restore", file.filename or "-", f"{len(raw)} bytes")
             _prune_backups()
         finally:
@@ -840,7 +858,7 @@ def register(app: FastAPI) -> None:
     @app.get("/api/export.csv")
     def export_csv(member: str = "", date_from: str = "", date_to: str = ""):
         rows = _filtered_records(member, date_from, date_to, "", 1, 100000)[0]
-        members = {m["id"]: dict(m) for m in db.active_members()}
+        members = {m["id"]: dict(m) for m in db.all_members()}
         head = ["时间", "成员", "体重kg", "阻抗Ω", "BMI", "体脂%", "脂肪量kg", "去脂体重kg",
                 "肌肉量kg", "骨骼肌kg", "水分%", "蛋白质kg", "内脏脂肪",
                 "代谢年龄", "身体评分", "体型", "来源", "状态"]
@@ -861,7 +879,8 @@ def register(app: FastAPI) -> None:
             if m:
                 c = bodycomp.build(w, m["height_cm"], m.get("birth_year"), m["sex"],
                                    r["impedance_used_ohm"] or 0,
-                                   birth_date=m.get("birth_date"))
+                                   birth_date=m.get("birth_date"),
+                                   at=bodycomp.date_of_iso(r["measured_at"]))
             writer.writerow([_cell(x) for x in [
                 r["measured_at"][:16].replace("T", " "), m["name"] if m else "待分配",
                 round(w, 1), r["impedance_used_ohm"] or "", c.get("bmi", ""),
@@ -879,7 +898,7 @@ def register(app: FastAPI) -> None:
     @app.get("/api/export.json")
     def export_json(member: str = "", date_from: str = "", date_to: str = ""):
         rows = _filtered_records(member, date_from, date_to, "", 1, 100000)[0]
-        members = {m["id"]: dict(m) for m in db.active_members()}
+        members = {m["id"]: dict(m) for m in db.all_members()}
         out = []
         for r in rows:
             m = members.get(r["member_id"])
@@ -888,7 +907,8 @@ def register(app: FastAPI) -> None:
             if m:
                 comp = bodycomp.build(w, m["height_cm"], m.get("birth_year"), m["sex"],
                                       r["impedance_used_ohm"] or 0,
-                                      birth_date=m.get("birth_date"))
+                                      birth_date=m.get("birth_date"),
+                                      at=bodycomp.date_of_iso(r["measured_at"]))
             out.append({"measured_at": r["measured_at"], "member": m["name"] if m else None,
                         "weight_kg": round(w, 2),
                         "impedance_ohm": r["impedance_used_ohm"] or 0,

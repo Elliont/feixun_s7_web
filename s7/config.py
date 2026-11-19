@@ -15,9 +15,10 @@ WEB_HOST = os.environ.get("S7_WEB_HOST", "0.0.0.0")
 WEB_PORT = int(os.environ.get("S7_WEB_PORT", "8080"))
 
 # 认证
-ADMIN_USERNAME = os.environ.get("S7_ADMIN_USERNAME", "admin")
+ADMIN_USERNAME = os.environ.get("S7_ADMIN_USERNAME") or "admin"
 ADMIN_PASSWORD = os.environ.get("S7_ADMIN_PASSWORD", "")
 DEV_NOAUTH = os.environ.get("S7_DEV_NOAUTH", "0") == "1"
+TRUST_PROXY = os.environ.get("S7_TRUST_PROXY", "0") == "1"
 SECRET_KEY = os.environ.get("S7_SECRET_KEY", "")
 if not SECRET_KEY:                              # 开发便利：未配置时用随机值（重启失效）
     import secrets as _secrets

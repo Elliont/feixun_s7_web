@@ -308,14 +308,20 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
             "SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
             "AND impedance_used_ohm > 0 ORDER BY measured_at DESC LIMIT 1", (member_id,))
     comp, comp_at = {}, None
+    comp_age = age
     if comp_src:
         comp_w = comp_src["weight_centi_kg"] / 100.0
+        comp_date = bodycomp.date_of_iso(comp_src["measured_at"])
         comp = bodycomp.build(comp_w, md["height_cm"], md.get("birth_year"), md["sex"],
                               comp_src["impedance_used_ohm"] or 0,
-                              birth_date=md.get("birth_date"))
+                              birth_date=md.get("birth_date"), at=comp_date)
         comp["height_cm"] = md["height_cm"]
         comp_at = comp_src["measured_at"]
+        comp_age = comp.get("age", age)
     comp_is_latest = bool(latest and comp_at == latest["measured_at"])
+    # 穿袜称重回退到历史体成分时，BMI 仍应反映最新体重
+    if latest and not comp_is_latest and md["height_cm"] > 0:
+        comp["bmi"] = round(weight / ((md["height_cm"] / 100.0) ** 2), 1)
 
     delta_last = None
     if latest and prev:
@@ -352,7 +358,8 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
     def _calc(r) -> dict:
         w = r["weight_centi_kg"] / 100.0
         c = bodycomp.build(w, md["height_cm"], md.get("birth_year"), md["sex"],
-                           r["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"))
+                           r["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"),
+                           at=bodycomp.date_of_iso(r["measured_at"]))
         return {"id": r["id"],
                 "measured_at": r["measured_at"][:16].replace("T", " "),
                 "time": r["measured_at"],
@@ -404,9 +411,11 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
     return templates.TemplateResponse("member_detail.html", ctx(
         request,
         m={**md, "age": age}, male=male, latest=latest, weight=weight, comp=comp,
+        comp_is_latest=comp_is_latest,
+        comp_at=comp_at[:16].replace("T", " ") if comp_at else None,
         member_tabs=[{"id": r["id"], "name": r["name"], "color": r["color"]}
                      for r in db.active_members()],
-        cards=grading.cards(comp, age, male),
+        cards=grading.cards(comp, comp_age, male),
         delta_last=delta_last, avg7=avg7, delta_avg=delta_avg,
         spark=spark,
         spark_min=round(min(r["weight_centi_kg"] for r in series) / 100.0, 1) if series else None,
@@ -435,7 +444,8 @@ def member_series(member_id: int, days: int = 365):
     for r in rows:
         w = r["weight_centi_kg"] / 100.0
         c = bodycomp.build(w, md["height_cm"], md.get("birth_year"), md["sex"],
-                           r["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"))
+                           r["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"),
+                           at=bodycomp.date_of_iso(r["measured_at"]))
         points.append({
             "t": r["measured_at"][:16].replace("T", " "),
             "d": r["measured_at"][:10],
@@ -466,11 +476,13 @@ def measurement_detail(request: Request, member_id: int, rid: int):
         return RedirectResponse(f"/m/{member_id}", status_code=303)
 
     md = _row(m)
-    age = bodycomp.age_of_date(md.get("birth_date"), md.get("birth_year"))
+    at_date = bodycomp.date_of_iso(row["measured_at"])
+    age = bodycomp.age_of_date(md.get("birth_date"), md.get("birth_year"), today=at_date)
     male = md["sex"] == "male"
     w = row["weight_centi_kg"] / 100.0
     comp = bodycomp.build(w, md["height_cm"], md.get("birth_year"), md["sex"],
-                          row["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"))
+                          row["impedance_used_ohm"] or 0, birth_date=md.get("birth_date"),
+                          at=at_date)
     comp["height_cm"] = md["height_cm"]
 
     nxt = db.one("SELECT id, measured_at FROM measurements WHERE member_id=? AND excluded=0 "

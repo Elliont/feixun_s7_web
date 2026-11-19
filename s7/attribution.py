@@ -25,18 +25,33 @@ def reference_weights() -> dict[int, float]:
     return db.recent_median_weights(n)
 
 
+def _auto_kg_setting() -> float:
+    try:
+        val = float(db.get_setting("match_auto_kg", "1"))
+        if val > 0:
+            return val
+    except (TypeError, ValueError):
+        pass
+    return 1.0
+
+
 def _pick(pool, weight_kg: float, refs: dict[int, float], auto_kg: float):
     """在候选池里挑一个足够确定的成员；返回 (member_id | None, score)。"""
     cands = []
+    has_uncalibrated = False
     for m in pool:
         ref = refs.get(m["id"])
         if ref is None:
+            has_uncalibrated = True
             continue
         cands.append((abs(ref - weight_kg), m["id"]))
     if not cands:
         return None, None
     cands.sort()
     d1, m1 = cands[0]
+    if has_uncalibrated:
+        # 候选池存在尚无历史体重的新成员：保守进待分配，避免把新成员首次称重误判给已有成员
+        return None, round(d1, 3)
     d2 = cands[1][0] if len(cands) > 1 else 9e9
     if d1 <= auto_kg and d2 > 2 * auto_kg:
         return m1, round(d1, 3)
@@ -48,15 +63,20 @@ def attribute(weight_kg: float, members, refs: dict[int, float],
               device_mac: str | None = None,
               bindings: dict[str, set[int]] | None = None) -> tuple[int | None, str, float | None]:
     """返回 (member_id | None, state, score)。"""
-    auto_kg = auto_kg if auto_kg is not None else float(db.get_setting("match_auto_kg", "1"))
+    auto_kg = auto_kg if auto_kg is not None else _auto_kg_setting()
 
     active = [m for m in members if m["is_active"]]
     if not active:
         return None, UNASSIGNED, None
-    if len(active) == 1:                      # 只有一位成员：不用犹豫
+    if len(active) == 1:
         d = refs.get(active[0]["id"])
-        score = abs(d - weight_kg) if d is not None else None
-        return active[0]["id"], AUTO, score
+        if d is None:
+            return active[0]["id"], AUTO, None
+        diff = round(abs(d - weight_kg), 3)
+        # 单成员防呆上限：偏离历史中位数过大（如访客/宠物/重物）时进待分配，避免污染趋势
+        if diff > max(5.0, 5.0 * auto_kg):
+            return None, UNASSIGNED, diff
+        return active[0]["id"], AUTO, diff
 
     # 1) 先看这台秤绑定的人
     bound = set((bindings or {}).get((device_mac or "").upper(), ()))

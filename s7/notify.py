@@ -26,14 +26,16 @@ def _events() -> set[str]:
     return {x.strip() for x in raw.split(",") if x.strip()}
 
 
-def send(event: str, payload: dict, aliases: list[str] | None = None) -> bool:
+def send(event: str, payload: dict, aliases: list[str] | None = None,
+         force: bool = False) -> bool:
     """发送通知；失败只记日志，不影响主流程。
 
     aliases：命中的任一个订阅事件即可发送（例如一次称重同时匹配
     measure.any / measure.member.3 / measure.unassigned）。
+    force：跳过启用开关与事件订阅过滤（用于设置页测试通知）。
     """
     keys = [event] + list(aliases or [])
-    if not enabled() or not any(k in _events() for k in keys):
+    if not force and (not enabled() or not any(k in _events() for k in keys)):
         return False
     token = db.get_setting("pushplus_token", "")
     if not token:

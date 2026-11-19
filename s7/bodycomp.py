@@ -80,12 +80,15 @@ def compute(weight_kg: float, height_cm: float, age: int, male: bool,
     else:
         slm = 0.1934 * w + 0.3186 * h - 0.0206 * a - 0.01320 * Z - 16.4556
     if bfr >= 45.0:
-        slm = 0.95 * w - 4
+        # 体脂触顶 45% 时去脂体重为 0.55*w，肌肉量不可超过去脂体重
+        slm = lbm - 4.0
     elif bfr <= 5.0:
         slm = 0.95 * w - 1
-    slm = _clamp(slm, 20.0, 70.0)
+    # 物理约束：肌肉量不能超过去脂体重（至少保留 1kg 骨量空间）
+    slm_hi = min(70.0, max(20.0, lbm - 1.0))
+    slm = _clamp(slm, 20.0, slm_hi)
 
-    protein = slm - tf
+    protein = max(0.0, slm - tf)
     bone = _clamp(lbm - slm, 1.0, 4.0)
     # Z 在阻抗相对体重偏低时会落到 0 或负数（如 R=150Ω/w≥125kg），
     # 直接除会抛 ZeroDivisionError 拖垮所有渲染页；此处按 0 兜底。
@@ -208,11 +211,25 @@ def _body_type(bfr: float, smm: float, w: float, male: bool) -> str:
     return "标准"
 
 
+def date_of_iso(iso: str | None) -> date | None:
+    """从 ISO 时间字符串提取测量日期，供历史记录按测量当天算年龄。"""
+    if not iso:
+        return None
+    try:
+        return date.fromisoformat(str(iso)[:10])
+    except ValueError:
+        return None
+
+
 def build(weight_kg: float, height_cm: float, birth_year: int | None, sex: str,
-          impedance_ohm: float, birth_date: str | None = None) -> dict:
-    """对外统一入口：补上年龄、分级、最佳区间等展示字段。"""
+          impedance_ohm: float, birth_date: str | None = None,
+          at: date | None = None) -> dict:
+    """对外统一入口：补上年龄、分级、最佳区间等展示字段。
+
+    at：测量日期；传入时按测量当天计算年龄，避免历史记录随生日漂移。
+    """
     male = (sex == "male")
-    age = age_of_date(birth_date, birth_year)
+    age = age_of_date(birth_date, birth_year, today=at)
     comp = compute(weight_kg, height_cm, age, male, impedance_ohm)
     if not comp:
         return {}

@@ -101,6 +101,11 @@
   <b>还没有测到过阻抗</b>
   <span style="font-size:13px">光脚踩实电极、双手握住手柄，等进度条走完即可测出体成分</span>
 </div>
+{% elif not comp_is_latest and comp_at %}
+<div class="banner banner-info">
+  <b>本次未测到阻抗</b>
+  <span style="font-size:13px">体重与 BMI 为本次数据，其余体成分沿用上次测到阻抗的记录（{{ comp_at }}）</span>
+</div>
 {% endif %}
 
 <!-- 核心指标 -->
@@ -161,7 +166,7 @@
 <!-- 指标趋势：点上方任意指标卡切换，默认体重 -->
 <div class="section-head">
   <h2 class="section-title">指标趋势</h2>
-  <a class="section-link" href="/records?member_id={{ m.id }}">所有记录 →</a>
+  <a class="section-link" href="/records?member={{ m.id }}">所有记录 →</a>
 </div>
 <div class="card chart-card" id="trend" data-member="{{ m.id }}"
      data-src="/m/{{ m.id }}/series.json" data-color="{{ m.color }}">

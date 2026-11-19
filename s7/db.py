@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -122,6 +123,20 @@ def execute(sql: str, params: tuple = ()) -> int:
     return cur.rowcount
 
 
+@contextmanager
+def transaction():
+    """显式事务包装：isolation_level=None（autocommit）下保证多步写操作原子性。"""
+    c = conn()
+    c.execute("BEGIN IMMEDIATE")
+    try:
+        yield c
+        c.execute("COMMIT")
+    except BaseException:
+        if c.in_transaction:
+            c.execute("ROLLBACK")
+        raise
+
+
 # ---------------------------------------------------------------- 设置
 
 def get_setting(key: str, default: str = "") -> str:
@@ -182,18 +197,19 @@ def delete_device(mac: str, purge_data: bool = False) -> int:
     """移除设备；purge_data=True 时连带删掉这台秤的称重记录与连接事件。"""
     mac = mac.strip().upper()
     removed = 0
-    if purge_data:
-        removed = execute("DELETE FROM measurements WHERE device_mac=?", (mac,))
-        execute("DELETE FROM device_events WHERE mac=?", (mac,))
-        execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
-        execute("DELETE FROM devices WHERE mac=?", (mac,))
-    else:
-        execute("DELETE FROM device_events WHERE mac=?", (mac,))
-        execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
-        execute("INSERT INTO devices(mac, name, bind_mode, hidden_at, created_at) "
-                "VALUES(?,?, 'all', ?, ?) "
-                "ON CONFLICT(mac) DO UPDATE SET hidden_at=excluded.hidden_at",
-                (mac, "", now_iso(), now_iso()))
+    with transaction():
+        if purge_data:
+            removed = execute("DELETE FROM measurements WHERE device_mac=?", (mac,))
+            execute("DELETE FROM device_events WHERE mac=?", (mac,))
+            execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
+            execute("DELETE FROM devices WHERE mac=?", (mac,))
+        else:
+            execute("DELETE FROM device_events WHERE mac=?", (mac,))
+            execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
+            execute("INSERT INTO devices(mac, name, bind_mode, hidden_at, created_at) "
+                    "VALUES(?,?, 'all', ?, ?) "
+                    "ON CONFLICT(mac) DO UPDATE SET hidden_at=excluded.hidden_at",
+                    (mac, "", now_iso(), now_iso()))
     return removed
 
 
@@ -209,19 +225,25 @@ def device_modes() -> dict[str, str]:
 
 def set_device_bindings(mac: str, member_ids: list[int], mode: str = "pick") -> None:
     mac = mac.strip().upper()
-    execute("INSERT INTO devices(mac, name, bind_mode, created_at) VALUES(?,?,?,?) "
-            "ON CONFLICT(mac) DO UPDATE SET bind_mode=excluded.bind_mode",
-            (mac, "", mode, now_iso()))
-    execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
-    for mid in member_ids:
-        execute("INSERT OR IGNORE INTO device_members(device_mac, member_id) VALUES(?,?)",
-                (mac, mid))
+    with transaction():
+        execute("INSERT INTO devices(mac, name, bind_mode, created_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(mac) DO UPDATE SET bind_mode=excluded.bind_mode",
+                (mac, "", mode, now_iso()))
+        execute("DELETE FROM device_members WHERE device_mac=?", (mac,))
+        for mid in member_ids:
+            execute("INSERT OR IGNORE INTO device_members(device_mac, member_id) VALUES(?,?)",
+                    (mac, mid))
 
 
 # ---------------------------------------------------------------- 成员 / 测量
 
 def active_members() -> list[sqlite3.Row]:
     return query("SELECT * FROM members WHERE is_active=1 ORDER BY id")
+
+
+def all_members() -> list[sqlite3.Row]:
+    """返回全部成员（含已停用），供历史记录展示与导出按原档案算体成分。"""
+    return query("SELECT * FROM members ORDER BY id")
 
 
 def member_by_id(member_id: int) -> sqlite3.Row | None:
@@ -265,16 +287,17 @@ def _ensure_trash(c: sqlite3.Connection) -> None:
 
 
 def trash_move(measurement_id: int) -> bool:
-    """把一条测量移进回收站（软删除）。"""
-    row = one("SELECT * FROM measurements WHERE id=?", (measurement_id,))
-    if not row:
-        return False
-    keys = list(row.keys())
-    collist = ",".join(f'"{k}"' for k in keys)
-    ph = ",".join("?" * len(keys))
-    execute(f"INSERT INTO measurements_trash({collist},deleted_at) VALUES({ph},?)",
-            tuple(row[k] for k in keys) + (now_iso(),))
-    execute("DELETE FROM measurements WHERE id=?", (measurement_id,))
+    """把一条测量移进回收站（软删除，事务保证原子性）。"""
+    with transaction():
+        row = one("SELECT * FROM measurements WHERE id=?", (measurement_id,))
+        if not row:
+            return False
+        keys = list(row.keys())
+        collist = ",".join(f'"{k}"' for k in keys)
+        ph = ",".join("?" * len(keys))
+        execute(f"INSERT INTO measurements_trash({collist},deleted_at) VALUES({ph},?)",
+                tuple(row[k] for k in keys) + (now_iso(),))
+        execute("DELETE FROM measurements WHERE id=?", (measurement_id,))
     return True
 
 
@@ -306,24 +329,25 @@ def trash_purge(days: int = TRASH_DAYS) -> int:
 
 
 def trash_restore(trash_id: int) -> bool:
-    """从回收站还原；原 id 或去重键被占用时退化为新 id。"""
-    row = one("SELECT * FROM measurements_trash WHERE trash_id=?", (trash_id,))
-    if not row:
-        return False
-    keys = [k for k in row.keys() if k not in ("trash_id", "deleted_at")]
-    ok = False
-    for cols in (keys, [k for k in keys if k != "id"]):
-        sql = ("INSERT INTO measurements(" + ",".join(f'"{k}"' for k in cols)
-               + ") VALUES(" + ",".join("?" * len(cols)) + ")")
-        try:
-            conn().execute(sql, tuple(row[k] for k in cols))
-            ok = True
-            break
-        except sqlite3.IntegrityError:
-            continue
-    if ok:
-        execute("DELETE FROM measurements_trash WHERE trash_id=?", (trash_id,))
-    return ok
+    """从回收站还原；原 id 或去重键被占用时退化为新 id（事务保证原子性）。"""
+    with transaction():
+        row = one("SELECT * FROM measurements_trash WHERE trash_id=?", (trash_id,))
+        if not row:
+            return False
+        keys = [k for k in row.keys() if k not in ("trash_id", "deleted_at")]
+        ok = False
+        for cols in (keys, [k for k in keys if k != "id"]):
+            sql = ("INSERT INTO measurements(" + ",".join(f'"{k}"' for k in cols)
+                   + ") VALUES(" + ",".join("?" * len(cols)) + ")")
+            try:
+                conn().execute(sql, tuple(row[k] for k in cols))
+                ok = True
+                break
+            except sqlite3.IntegrityError:
+                continue
+        if ok:
+            execute("DELETE FROM measurements_trash WHERE trash_id=?", (trash_id,))
+        return ok
 
 
 def trash_delete(trash_id: int) -> bool:

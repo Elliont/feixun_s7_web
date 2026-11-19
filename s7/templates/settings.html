@@ -14,6 +14,7 @@
 {% if err == 2 %}<div class="banner banner-warn"><b>密码修改失败</b>旧密码不正确，或新密码不足 8 位 / 两次不一致。</div>{% endif %}
 {% if err == 3 %}<div class="banner banner-warn"><b>不是有效的备份文件</b>需要本系统导出的 .db 文件。</div>{% endif %}
 {% if err == 4 %}<div class="banner banner-warn"><b>这个库不像是韭菜称重的备份</b>缺少 members / measurements 表。</div>{% endif %}
+{% if err == 5 %}<div class="banner banner-warn"><b>自动分配阈值无效</b>请输入 0.1–20 之间的数字（单位 kg）。</div>{% endif %}
 
 <div class="set-rows">
   <!-- 第一行：系统设置（改密码 + 备份恢复） / 计算公式 -->
@@ -88,7 +89,7 @@
                 aria-label="查看自动分配阈值的算法">?</span>
         </label>
         <input class="input" id="match_auto_kg" name="match_auto_kg" type="number" step="0.1"
-               value="{{ values.match_auto_kg or '1' }}">
+               min="0.1" max="20" required value="{{ values.match_auto_kg or '1' }}">
         <div class="field-hint">单位 kg</div>
       </div>
 

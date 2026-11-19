@@ -16,7 +16,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 XOR_KEY = 0x55
 MIN_FRAME = 32
@@ -173,7 +173,7 @@ def parse_record(plain: bytes) -> dict | None:
     cmd = cmd_of(plain)
     mac = mac_of(plain)
 
-    if cmd == CMD_REPORT and length >= 60:
+    if cmd == CMD_REPORT and length >= 62:
         weight = (plain[43] << 8) | plain[44]
         if not valid_weight(weight):
             return None
@@ -196,12 +196,15 @@ def parse_record(plain: bytes) -> dict | None:
         weight = (plain[37] << 8) | plain[38]
         data_type = plain[39]
         imps = [((plain[40 + i * 2] << 8) | plain[41 + i * 2]) for i in range(6)]
+        now = datetime.now()
         try:
             measured = datetime(year, month, day, hour, minute, second)
-            if abs((measured - datetime.now()).total_seconds()) > 86400:
-                measured = datetime.now()
+            # 仅拦截未校准时钟（早于 2020 年）或明显超前于当前时间的异常值，
+            # 保留断网超过 24 小时的合法历史记录时间。
+            if measured.year < 2020 or measured > now + timedelta(days=1):
+                measured = now
         except ValueError:
-            measured = datetime.now()
+            measured = now
         if not valid_weight(weight):
             return None
         return {
@@ -218,11 +221,11 @@ def parse_record(plain: bytes) -> dict | None:
 
 
 def body_impedance(record: dict) -> float:
-    """双足通道（第 6 段）优先，返回 Ω（float）；无效返回 0。"""
+    """只取双足通道（第 6 段），返回 Ω（float）；无效返回 0。
+
+    芯海 50kHz 体成分公式仅适用于双脚通道阻抗，不可回退到其他电极节段阻抗。
+    """
     imps = record.get("impedances") or []
     if len(imps) > FOOT_CHANNEL_INDEX and valid_impedance(imps[FOOT_CHANNEL_INDEX]):
         return imps[FOOT_CHANNEL_INDEX] / 10.0
-    for v in imps:
-        if valid_impedance(v):
-            return v / 10.0
     return 0.0
