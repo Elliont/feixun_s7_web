@@ -19,14 +19,16 @@ services:
     mem_limit: 256m
     environment:
       S7_DATA_DIR: /data
+      # 收秤端口，改 .env 的 S7_INGEST_PORT 即可整体调整
+      S7_INGEST_PORT: ${S7_INGEST_PORT:-30101}
       TZ: ${TZ:-Asia/Shanghai}
     ports:
-      # 秤会连到这里；S7_INGEST_BIND 留空表示监听所有网卡
-      - "${S7_INGEST_BIND:-0.0.0.0}:30101:30101"
+      # 秤会连到这里；S7_INGEST_BIND 是宿主绑定地址，S7_INGEST_PORT 是收秤端口
+      - "${S7_INGEST_BIND:-0.0.0.0}:${S7_INGEST_PORT:-30101}:${S7_INGEST_PORT:-30101}"
     volumes:
       - s7data:/data
     healthcheck:
-      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',30101))==0 else 1)"]
+      test: ["CMD", "python", "-c", "import socket,sys; s=socket.socket(); s.settimeout(2); sys.exit(0 if s.connect_ex(('127.0.0.1',${S7_INGEST_PORT:-30101}))==0 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -53,14 +53,23 @@
 | 变量 | 默认值 | 作用 |
 | --- | --- | --- |
 | `S7_WEB_BIND` | `8080` | 网页映射到宿主机的端口，改后从 `http://<服务器IP>:<此端口>` 访问 |
-| `S7_INGEST_BIND` | `0.0.0.0` | 收秤端口 `30101` 的宿主机绑定地址；只想让内网访问可填服务器内网 IP |
+| `S7_INGEST_PORT` | `30101` | 收秤端口。改这里即可整体调整（容器监听 + 端口映射 + 健康检查同步）；**改完必须把配网 App 里的服务器端口也改成同一个值**，否则秤连不上 |
+| `S7_INGEST_BIND` | `0.0.0.0` | 收秤端口的宿主机绑定地址；只想让内网访问可填服务器内网 IP |
 | `S7_IMAGE` | `ghcr.io/elliont/feixun_s7_web:latest` | 使用的容器镜像；本地构建填 `feixun_s7_web:local` |
 | `TZ` | `Asia/Shanghai` | 时区，影响称重时间显示 |
 | `S7_ADMIN_USERNAME` | 空 | 启动时直接创建的管理员用户名；留空则首次访问网页时自助建号 |
 | `S7_ADMIN_PASSWORD` | 空 | 上述管理员的密码；公网部署建议填强密码，避免被抢先注册 |
 | `S7_SECRET_KEY` | 空 | 会话签名密钥；留空自动生成并写入数据库，重启不掉登录 |
 
-另有高级项：`S7_SESSION_DAYS`（登录有效期，默认 30 天）、`S7_DEBUG`（调试日志）、`S7_COOKIE_SECURE`（HTTPS 反代后设为 `1`，给会话 cookie 加 Secure 标志）、`S7_DB_PATH`（单独指定数据库文件路径）。这些在容器内部读取，需通过 `compose.yml` 的 `environment` 传入才生效。
+高级项（一般无需修改，均已写入 `.env.example`）：
+
+| 变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `S7_SESSION_DAYS` | `30` | 登录有效期（天） |
+| `S7_COOKIE_SECURE` | `0` | HTTPS 反向代理后设为 `1`，给会话 cookie 加 Secure 标志；直接 http 访问保持 `0` |
+| `S7_DEBUG` | `0` | 设为 `1` 打开详细调试日志 |
+| `S7_DB_PATH` | 空 | 单独指定数据库文件路径，留空则用 `$S7_DATA_DIR/s7.db` |
+| `S7_DEV_NOAUTH` | `0` | 调试用，置 `1` 完全跳过登录；**切勿在公网开启** |
 
 ### 把数据库映射到宿主机（`compose.yml`）
 
@@ -77,18 +86,23 @@ services:
       - ./data:/data
 ```
 
-执行 `docker compose up -d` 后，数据库文件就位于项目目录下的 `data/s7.db`，直接拷走这个文件即可备份。首次从原命名卷迁移时，先执行：
+执行 `docker compose up -d` 后，数据库文件就位于项目目录下的 `data/s7.db`。首次从原命名卷迁移时，先执行：
 
 ```bash
 mkdir -p data
 docker run --rm -v s7_s7data:/source -v "$PWD/data":/dest alpine cp -a /source/. /dest/
 ```
 
+映射出来后确实可以直接拷贝数据库文件，但要注意 SQLite 的 **WAL 模式**：服务运行时，最近的写入可能还在 `data/s7.db-wal` 里、没合并进 `s7.db`。拷贝时有两种稳妥做法：
+
+- **推荐**：用网页「设置」页的一键备份，拿到的是完整一致的数据库；
+- **手动拷**：先 `docker compose stop`，再把整个 `data/` 目录（`s7.db`、`s7.db-wal`、`s7.db-shm` 一起）复制走。只拷运行中的 `s7.db` 单文件可能丢最近几条记录。
+
 > 升级只会补新表/新列，老库直接能用。**升级前先备份**，这是唯一的好习惯。
 
 ## 数据与备份
 
-- 数据库为 SQLite（WAL 模式），同目录还有 `-wal` / `-shm` 文件
+- 数据库为 SQLite（WAL 模式），同目录还有 `-wal` / `-shm` 文件，三者要一起看
 - 网页「设置」页可一键下载备份；恢复时上传 `.db` 文件即可，系统会自动先留存一份当前数据
 - 忘记密码时执行以下命令后重启服务，网页会回到设置页重新建号：
 
