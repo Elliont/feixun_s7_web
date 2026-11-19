@@ -71,22 +71,25 @@
 | `S7_DB_PATH` | 空 | 单独指定数据库文件路径，留空则用 `$S7_DATA_DIR/s7.db` |
 | `S7_DEV_NOAUTH` | `0` | 调试用，置 `1` 完全跳过登录；**切勿在公网开启** |
 
-### 把数据库映射到宿主机（`compose.yml`）
+### 把数据库映射到宿主机
 
-默认用 Docker 命名卷 `s7data` 存放数据库，文件不在宿主机目录里。若想直接看到数据库文件、方便备份，可在 `compose.yml` 同目录新建 `compose.override.yml`（`docker compose` 会自动合并）：
+默认用 Docker 命名卷 `s7data` 存放数据库，文件不在宿主机目录里。若想直接看到数据库文件、方便备份，直接编辑 `compose.yml`：`ingest` 和 `web` 两个服务各有一行 `volumes`，把其中的
 
 ```yaml
-# compose.override.yml
-services:
-  ingest:
-    volumes:
-      - ./data:/data
-  web:
-    volumes:
+      - s7data:/data
+```
+
+改为
+
+```yaml
       - ./data:/data
 ```
 
-执行 `docker compose up -d` 后，数据库文件就位于项目目录下的 `data/s7.db`。首次从原命名卷迁移时，先执行：
+两处都要改。执行 `docker compose up -d` 后，数据库文件就位于项目目录下的 `data/s7.db`。
+
+> 以后 `git pull` 升级时留意这处本地改动，别被覆盖即可。
+
+首次从原命名卷迁移时，先执行：
 
 ```bash
 mkdir -p data
