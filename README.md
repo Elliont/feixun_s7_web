@@ -79,7 +79,7 @@
       - ./data:/data    # 原为 s7data:/data，两处都要改
 ```
 
-再执行 `docker compose up -d`，数据库文件就位于项目目录下的 `data/s7.db`。以后 `git pull` 升级时留意这处本地改动，别被覆盖。
+再执行 `docker compose up -d`，数据库文件就位于项目目录下的 `data/s7.db`。
 
 ## 数据与备份
 
