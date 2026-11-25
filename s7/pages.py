@@ -21,8 +21,9 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from starlette.concurrency import run_in_threadpool
 
-from . import __version__, bodycomp, config, db, fatstandards, grading, notify
+from . import __version__, backup, bodycomp, config, db, fatstandards, grading, notify
 from .ui import (_age, _goal_view, _human_since, _row,
                  csrf_token, ctx, templates)
 
@@ -130,6 +131,23 @@ def ensure_secret() -> None:
     value = secrets.token_urlsafe(32)
     db.set_setting("secret_key", value)
     config.SECRET_KEY = value
+
+
+def _restore_upload(raw: bytes, filename: str) -> None:
+    """恢复及其后续操作在同一个工作线程执行；失败时还原库与进程内密钥。"""
+    try:
+        with backup.restore(raw):
+            # 必须在恢复锁内读取旧值，避免并发请求还原到另一轮恢复前的密钥。
+            old_secret = config.SECRET_KEY
+            try:
+                ensure_secret()
+                db.audit("backup.restore", filename, f"{len(raw)} bytes")
+                _prune_backups()
+            except BaseException:
+                config.SECRET_KEY = old_secret
+                raise
+    finally:
+        fatstandards.invalidate()
 
 
 def check_login(username: str, password: str) -> bool:
@@ -592,45 +610,17 @@ def register(app: FastAPI) -> None:
 
     @app.post("/admin/restore")
     async def admin_restore(file: UploadFile = File(...)):
-        """用上传的 .db 覆盖当前库；覆盖前先自动留一份现场。"""
+        """先校验并升级上传库，替换失败时自动还原当前数据。"""
         raw = await file.read()
-        if not raw.startswith(b"SQLite format 3"):
-            return RedirectResponse("/settings?err=3", status_code=303)
-        config.ensure_dirs()
-        tmp = config.DATA_DIR / "backup" / "_restore_upload.db"
-        tmp.write_bytes(raw)
         try:
-            try:
-                probe = sqlite3.connect(str(tmp))
-                tables = {r[0] for r in probe.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'")}
-                probe.close()
-            except sqlite3.DatabaseError:
-                return RedirectResponse("/settings?err=3", status_code=303)
-            if not {"measurements", "members"} <= tables:
-                return RedirectResponse("/settings?err=4", status_code=303)
-
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            pre = config.DATA_DIR / "backup" / f"before-restore-{stamp}.db"
-            live = sqlite3.connect(str(config.DB_PATH))
-            snap = sqlite3.connect(str(pre))
-            with snap:
-                live.backup(snap)
-            snap.close()
-
-            src = sqlite3.connect(str(tmp))
-            with live:
-                src.backup(live)
-            src.close()
-            live.close()
-
-            db.ensure_schema()          # 老备份可能缺新列，补一下
-            fatstandards.invalidate()   # 刷新体脂判定标准缓存
-            ensure_secret()             # 同步恢复库中的会话密钥（未设环境变量时）
-            db.audit("backup.restore", file.filename or "-", f"{len(raw)} bytes")
-            _prune_backups()
-        finally:
-            tmp.unlink(missing_ok=True)
+            await run_in_threadpool(_restore_upload, raw, file.filename or "-")
+        except backup.InvalidBackup:
+            return RedirectResponse("/settings?err=3", status_code=303)
+        except backup.IncompatibleBackup:
+            return RedirectResponse("/settings?err=4", status_code=303)
+        except Exception:
+            log.exception("恢复失败，已尝试从恢复前快照还原")
+            return RedirectResponse("/settings?err=6", status_code=303)
         return RedirectResponse("/settings?ok=5", status_code=303)
 
     @app.get("/admin/backup/{name}")

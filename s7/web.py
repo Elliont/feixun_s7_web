@@ -203,11 +203,16 @@ def _save_goal(member_id: int, target: str, start: str = "") -> None:
         latest = db.one("SELECT weight_centi_kg FROM measurements WHERE member_id=? "
                         "AND excluded=0 ORDER BY measured_at DESC LIMIT 1", (member_id,))
         start_val = round(latest["weight_centi_kg"] / 100.0, 2) if latest else None
-    cur = db.one("SELECT id, start_value, target_value, deadline FROM goals WHERE member_id=? "
+    cur = db.one("SELECT * FROM goals WHERE member_id=? "
                  "AND kind='weight' AND is_active=1 ORDER BY id DESC LIMIT 1", (member_id,))
+    cur_start = db.goal_start(cur) if cur else None
+    if cur and not raw_start and cur_start is not None \
+            and abs(float(cur["target_value"]) - val) < 0.001:
+        start_val = cur_start                    # 编辑未改目标时保留已固定的起点
     if cur and abs(float(cur["target_value"]) - val) < 0.001 \
-            and (start_val is None or cur["start_value"] is None
-                 or abs(float(cur["start_value"]) - start_val) < 0.001):
+            and ((start_val is None and cur_start is None)
+                 or (start_val is not None and cur_start is not None
+                     and abs(cur_start - start_val) < 0.001)):
         if cur["deadline"]:                      # 期限功能已下线，把历史值清掉
             db.execute("UPDATE goals SET deadline=NULL WHERE id=?", (cur["id"],))
         return                                   # 没有变化，不新建
@@ -294,10 +299,9 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
     age = bodycomp.age_of_date(md.get("birth_date"), md.get("birth_year"))
     male = md["sex"] == "male"
 
-    latest = db.one("SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
-                    "ORDER BY measured_at DESC LIMIT 1", (member_id,))
-    prev = db.one("SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
-                  "ORDER BY measured_at DESC LIMIT 1 OFFSET 1", (member_id,))
+    sess = db.member_sessions(member_id, limit_sessions=2, newest_first=True)
+    latest = sess[0] if sess else None
+    prev = sess[1] if len(sess) > 1 else None
 
     weight = round(latest["weight_centi_kg"] / 100.0, 2) if latest else None
 
@@ -327,16 +331,11 @@ def member_detail(request: Request, member_id: int, rp: int = 1, rs: int = 10,
     if latest and prev:
         delta_last = round((latest["weight_centi_kg"] - prev["weight_centi_kg"]) / 100.0, 2)
 
-    week = db.query("SELECT weight_centi_kg FROM measurements WHERE member_id=? "
-                    "AND excluded=0 AND measured_at >= ? "
-                    "ORDER BY measured_at DESC", (member_id, db.cutoff_iso(7)))
+    week = db.member_sessions(member_id, since_iso=db.cutoff_iso(7))
     avg7 = round(sum(r["weight_centi_kg"] for r in week) / len(week) / 100.0, 2) if week else None
     delta_avg = round(weight - avg7, 2) if (weight is not None and avg7 is not None) else None
 
-    series = db.query("SELECT measured_at, weight_centi_kg FROM measurements "
-                      "WHERE member_id=? AND excluded=0 "
-                      "AND measured_at >= ? ORDER BY measured_at",
-                      (member_id, db.cutoff_iso(30)))
+    series = db.member_sessions(member_id, since_iso=db.cutoff_iso(30))
     spark = _sparkline([r["weight_centi_kg"] / 100.0 for r in series])
 
     # ---- 体重记录：分页 + 排序 + 按需显示列 + 每行可点进单次详情
@@ -435,11 +434,7 @@ def member_series(member_id: int, days: int = 365):
         return JSONResponse({"ok": False, "error": "member not found"}, status_code=404)
     md = _row(m)
     days = days if days in (30, 90, 180, 365) else 365
-    rows = db.query(
-        "SELECT id, measured_at, weight_centi_kg, impedance_used_ohm FROM measurements "
-        "WHERE member_id=? AND excluded=0 "
-        "AND measured_at >= ? ORDER BY measured_at",
-        (member_id, db.cutoff_iso(days)))
+    rows = db.member_sessions(member_id, since_iso=db.cutoff_iso(days))
     points = []
     for r in rows:
         w = r["weight_centi_kg"] / 100.0

@@ -19,6 +19,8 @@ services:
     mem_limit: 256m
     environment:
       S7_DATA_DIR: /data
+      S7_DB_PATH: ${S7_DB_PATH:-/data/s7.db}
+      S7_DEBUG: ${S7_DEBUG:-0}
       # 收秤端口，改 .env 的 S7_INGEST_PORT 即可整体调整
       S7_INGEST_PORT: ${S7_INGEST_PORT:-30101}
       TZ: ${TZ:-Asia/Shanghai}
@@ -47,12 +49,17 @@ services:
     mem_limit: 256m
     environment:
       S7_DATA_DIR: /data
+      S7_DB_PATH: ${S7_DB_PATH:-/data/s7.db}
+      S7_DEBUG: ${S7_DEBUG:-0}
+      S7_COOKIE_SECURE: ${S7_COOKIE_SECURE:-0}
+      S7_SESSION_DAYS: ${S7_SESSION_DAYS:-30}
+      S7_TRUST_PROXY: ${S7_TRUST_PROXY:-0}
       # 有这两个变量就按它们初始化管理员；留空则首次访问走 /setup 自己建号
       S7_ADMIN_USERNAME: ${S7_ADMIN_USERNAME:-}
       S7_ADMIN_PASSWORD: ${S7_ADMIN_PASSWORD:-}
       # 留空时首次启动自动生成并写入数据库（重启不掉登录）
       S7_SECRET_KEY: ${S7_SECRET_KEY:-}
-      S7_DEV_NOAUTH: "0"
+      S7_DEV_NOAUTH: ${S7_DEV_NOAUTH:-0}
       TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "${S7_WEB_BIND:-8080}:8080"

@@ -13,8 +13,9 @@
 {% if ok == 5 %}<div class="banner banner-ok"><b>已恢复</b>数据已替换为备份内容，旧库留存为 before-restore-*.db。</div>{% endif %}
 {% if err == 2 %}<div class="banner banner-warn"><b>密码修改失败</b>旧密码不正确，或新密码不足 8 位 / 两次不一致。</div>{% endif %}
 {% if err == 3 %}<div class="banner banner-warn"><b>不是有效的备份文件</b>需要本系统导出的 .db 文件。</div>{% endif %}
-{% if err == 4 %}<div class="banner banner-warn"><b>这个库不像是韭菜称重的备份</b>缺少 members / measurements 表。</div>{% endif %}
+{% if err == 4 %}<div class="banner banner-warn"><b>备份与当前版本不兼容</b>表结构或数据关联不完整，请选择本系统导出的备份。</div>{% endif %}
 {% if err == 5 %}<div class="banner banner-warn"><b>自动分配阈值无效</b>请输入 0.1–20 之间的数字（单位 kg）。</div>{% endif %}
+{% if err == 6 %}<div class="banner banner-warn"><b>恢复未完成</b>请稍后重试，或使用恢复前自动保存的备份。</div>{% endif %}
 
 <div class="set-rows">
   <!-- 第一行：系统设置（改密码 + 备份恢复） / 计算公式 -->

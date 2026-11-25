@@ -75,9 +75,9 @@ _LV_CLASS = {"ok": "v-ok", "low": "v-low", "warn": "v-warn", "bad": "v-bad", "in
 
 
 def _member_card(m: dict) -> dict:
-    latest = db.one(
-        "SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
-        "ORDER BY measured_at DESC LIMIT 1", (m["id"],))
+    sess = db.member_sessions(m["id"], limit_sessions=2, newest_first=True)
+    latest = sess[0] if sess else None
+    prev = sess[1] if len(sess) > 1 else None
     card = {
         "id": m["id"], "name": m["name"], "sex": m["sex"],
         "age": _age(m),
@@ -100,9 +100,6 @@ def _member_card(m: dict) -> dict:
             "match_state": latest["match_state"],
             "last_human": _human_since(latest["measured_at"]),
         })
-        prev = db.one(
-            "SELECT weight_centi_kg FROM measurements WHERE member_id=? AND excluded=0 "
-            "ORDER BY measured_at DESC LIMIT 1 OFFSET 1", (m["id"],))
         if prev:
             card["delta"] = round(weight - prev["weight_centi_kg"] / 100.0, 1)
         # 三项指标的等级色（v-ok/v-low/v-warn/v-bad），由 grading 判定
@@ -120,9 +117,9 @@ def _member_card(m: dict) -> dict:
     goal = db.one(
         "SELECT * FROM goals WHERE member_id=? AND is_active=1 AND kind='weight' "
         "ORDER BY id DESC LIMIT 1", (m["id"],))
-    if goal and card["weight_kg"] is not None:
+    start = db.goal_start(goal) if goal else None
+    if goal and start is not None and card["weight_kg"] is not None:
         cur_w = card["weight_kg"]
-        start = goal["start_value"] if goal["start_value"] is not None else cur_w
         target = goal["target_value"]
         gain = target > start
         done = (cur_w >= target) if gain else (cur_w <= target)
@@ -286,11 +283,11 @@ def _goal_view(member_id: int, current: float | None) -> dict | None:
     if not g:
         return None
     target = g["target_value"]
-    start = g["start_value"] if g["start_value"] is not None else current
+    start = db.goal_start(g)
     view = {"kind": g["kind"], "target": target, "start": start,
             "deadline": g["deadline"], "progress": 0.0, "remain": None,
             "eta": None, "done": False}
-    if current is None:
+    if current is None or start is None:
         return view
     gain = (start is not None and target > start)
     done = (current >= target) if gain else (current <= target)
@@ -304,10 +301,7 @@ def _goal_view(member_id: int, current: float | None) -> dict | None:
     view["gain"] = gain
 
     if not view["done"]:
-        rows = db.query("SELECT measured_at, weight_centi_kg FROM measurements "
-                        "WHERE member_id=? AND excluded=0 "
-                        "AND measured_at >= ? "
-                        "ORDER BY measured_at", (member_id, db.cutoff_iso(30)))
+        rows = db.member_sessions(member_id, since_iso=db.cutoff_iso(30))
         view["eta_note"] = None
         if len(rows) < 4:
             view["eta_note"] = "数据不足，暂不预测"

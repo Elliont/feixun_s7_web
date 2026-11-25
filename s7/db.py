@@ -14,7 +14,9 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import config
+from . import config, protocol
+
+SESSION_WINDOW_MINUTES = 10
 
 _local = threading.local()
 _init_lock = threading.Lock()
@@ -73,10 +75,10 @@ def init_db() -> None:
         _initialized = True
 
 
-def ensure_schema() -> None:
-    """重跑建表与迁移（恢复备份后调用，老备份可能缺新列）。"""
+def ensure_schema(c: sqlite3.Connection | None = None) -> None:
+    """重跑建表与迁移；可传临时库连接，在恢复前完成旧备份升级。"""
     schema = (Path(__file__).parent / "schema.sql").read_text(encoding="utf-8")
-    c = conn()
+    c = c if c is not None else conn()
     c.executescript(schema)
     _migrate_v2(c)          # 老备份缺 birth_date 列；函数本身幂等
     _ensure_trash(c)
@@ -250,19 +252,141 @@ def member_by_id(member_id: int) -> sqlite3.Row | None:
     return one("SELECT * FROM members WHERE id=?", (member_id,))
 
 
+def _valid_imp_channels(row) -> int:
+    """统计一条测量中有效阻抗通道数（6 路全电极 > 仅双脚 1 路 > 无阻抗 0 路）。"""
+    keys = row.keys()
+    raw = row["impedances"] if "impedances" in keys else ""
+    cnt = 0
+    if raw:
+        for tok in str(raw).split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                if protocol.valid_impedance(int(tok)):
+                    cnt += 1
+            except ValueError:
+                pass
+    if cnt == 0:
+        imp = row["impedance_used_ohm"] if "impedance_used_ohm" in keys else 0
+        if imp and float(imp) > 0:
+            cnt = 1
+    return cnt
+
+
+def dedup_sessions(rows: list[sqlite3.Row],
+                   window_minutes: int = SESSION_WINDOW_MINUTES,
+                   newest_first: bool = False) -> list[sqlite3.Row]:
+    """把同一成员短时间内的多次称重聚合成会话，每个会话仅选 1 条代表记录。
+
+    规则：
+      1) 按时间升序，相邻两条间隔 ≤ window_minutes 归入同一称重会话；
+      2) 会话内按「有效阻抗通道数最多 → 时间最新 → id 最大」挑出代表记录。
+    """
+    if len(rows) <= 1:
+        return list(rows)
+    ordered = sorted(
+        rows,
+        key=lambda r: (str(r["measured_at"]), int(r["id"]) if "id" in r.keys() else 0),
+    )
+    window_sec = window_minutes * 60
+    groups: list[list[sqlite3.Row]] = []
+    prev_t: datetime | None = None
+
+    for r in ordered:
+        try:
+            t = datetime.fromisoformat(str(r["measured_at"])).replace(tzinfo=None)
+        except ValueError:
+            t = None
+        if groups and prev_t is not None and t is not None \
+                and (t - prev_t).total_seconds() <= window_sec:
+            groups[-1].append(r)
+        else:
+            groups.append([r])
+        prev_t = t
+
+    picked = [
+        max(
+            g,
+            key=lambda r: (
+                _valid_imp_channels(r),
+                str(r["measured_at"]),
+                int(r["id"]) if "id" in r.keys() else 0,
+            ),
+        )
+        for g in groups
+    ]
+    if newest_first:
+        picked.reverse()
+    return picked
+
+
+def member_sessions(member_id: int, since_iso: str | None = None,
+                    limit_sessions: int | None = None,
+                    newest_first: bool = False,
+                    window_minutes: int = SESSION_WINDOW_MINUTES) -> list[sqlite3.Row]:
+    """查询成员有效测量并按称重会话去重（不影响原始记录存储）。"""
+    if limit_sessions is not None and limit_sessions <= 0:
+        return []
+    if since_iso is not None:
+        rows = query(
+            "SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
+            "AND measured_at >= ? ORDER BY measured_at ASC, id ASC",
+            (member_id, since_iso))
+        sess = dedup_sessions(rows, window_minutes=window_minutes, newest_first=newest_first)
+        return sess[:limit_sessions] if (limit_sessions and newest_first) else (
+            sess[-limit_sessions:] if limit_sessions else sess)
+
+    if limit_sessions is not None:
+        fetch_n = max(limit_sessions * 20, 100)
+        while True:
+            rows = query(
+                "SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
+                "ORDER BY measured_at DESC, id DESC LIMIT ?",
+                (member_id, fetch_n))
+            sess = dedup_sessions(rows, window_minutes=window_minutes, newest_first=newest_first)
+            # 多读到一个更早会话才说明所需的边界会话完整；否则扩大范围继续读取。
+            if len(sess) > limit_sessions or len(rows) < fetch_n:
+                return sess[:limit_sessions] if newest_first else sess[-limit_sessions:]
+            fetch_n *= 2
+
+    rows = query(
+        "SELECT * FROM measurements WHERE member_id=? AND excluded=0 "
+        "ORDER BY measured_at ASC, id ASC", (member_id,))
+    return dedup_sessions(rows, window_minutes=window_minutes, newest_first=newest_first)
+
+
 def recent_median_weights(n: int = 5) -> dict[int, float]:
-    """每个成员最近 n 次有效体重的中位数，用于归属参照。"""
+    """每个成员最近 n 次独立称重会话的中位数，用于归属参照。"""
     out: dict[int, float] = {}
     for m in active_members():
-        rows = query(
-            "SELECT weight_centi_kg FROM measurements "
-            "WHERE member_id=? AND excluded=0 ORDER BY measured_at DESC LIMIT ?",
-            (m["id"], n))
+        rows = member_sessions(m["id"], limit_sessions=n, newest_first=True)
         vals = sorted(r["weight_centi_kg"] / 100.0 for r in rows)
         if vals:
             k = len(vals)
             out[m["id"]] = vals[k // 2] if k % 2 else (vals[k // 2 - 1] + vals[k // 2]) / 2
     return out
+
+
+def goal_start(goal) -> float | None:
+    """固定空起点：优先取目标创建后的首次有效称重，否则取创建前最后一次。"""
+    if goal["start_value"] is not None:
+        return float(goal["start_value"])
+    # created_at 带本地偏移、设备测量通常不带偏移；按保存的本地钟面时间比较。
+    created = str(goal["created_at"])[:19].replace("T", " ")
+    row = one("SELECT weight_centi_kg FROM measurements WHERE member_id=? AND excluded=0 "
+              "AND substr(replace(measured_at,'T',' '),1,19)>=? "
+              "ORDER BY measured_at ASC,id ASC LIMIT 1", (goal["member_id"], created))
+    if row is None:
+        row = one("SELECT weight_centi_kg FROM measurements WHERE member_id=? AND excluded=0 "
+                  "ORDER BY measured_at DESC,id DESC LIMIT 1", (goal["member_id"],))
+    if row is None:
+        return None
+    start = round(row["weight_centi_kg"] / 100.0, 2)
+    execute("UPDATE goals SET start_value=? WHERE id=? AND start_value IS NULL", (start, goal["id"]))
+    # 并发首次读取只允许一个起点生效，所有页面使用最终保存值。
+    saved = one("SELECT start_value FROM goals WHERE id=?", (goal["id"],))
+    return float(saved["start_value"]) if saved and saved["start_value"] is not None else start
 
 
 # ---------------------------------------------------------------- 回收站

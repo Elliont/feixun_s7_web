@@ -29,6 +29,9 @@ jobs:
       - name: 语法编译
         run: python -m compileall -q s7
 
+      - name: 备份恢复、采集确认与称重记录回归
+        run: python -m unittest discover -s tests -v
+
       - name: 启动并请求 /healthz
         run: |
           export S7_DATA_DIR="$RUNNER_TEMP/s7data"

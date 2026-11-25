@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 DATA_DIR = Path(os.environ.get("S7_DATA_DIR", "/data"))
-DB_PATH = Path(os.environ.get("S7_DB_PATH", str(DATA_DIR / "s7.db")))
+DB_PATH = Path(os.environ.get("S7_DB_PATH") or str(DATA_DIR / "s7.db"))
 
 # 网络
 INGEST_HOST = os.environ.get("S7_INGEST_HOST", "0.0.0.0")

@@ -51,9 +51,15 @@ CREATE INDEX IF NOT EXISTS idx_m_time ON measurements(measured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m_member ON measurements(member_id, measured_at DESC);
 CREATE INDEX IF NOT EXISTS idx_m_state ON measurements(match_state);
 
--- 幂等：同一设备 + 同一时间 + 同一体重只入一次
-CREATE UNIQUE INDEX IF NOT EXISTS ux_m_dedup
-  ON measurements(device_mac, measured_at, weight_centi_kg);
+-- 硬件上报按设备去重；补录/导入共用虚拟设备名，必须同时区分成员。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_m_hardware_dedup
+  ON measurements(device_mac, measured_at, weight_centi_kg)
+  WHERE device_mac NOT IN ('MANUAL','IMPORT');
+CREATE UNIQUE INDEX IF NOT EXISTS ux_m_local_dedup
+  ON measurements(device_mac, COALESCE(member_id,0), measured_at, weight_centi_kg)
+  WHERE device_mac IN ('MANUAL','IMPORT');
+-- 新索引建好后再移除旧索引，老库升级期间始终有去重约束。
+DROP INDEX IF EXISTS ux_m_dedup;
 
 CREATE TABLE IF NOT EXISTS goals(
   id INTEGER PRIMARY KEY AUTOINCREMENT,

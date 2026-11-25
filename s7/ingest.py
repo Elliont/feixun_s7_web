@@ -91,7 +91,11 @@ def _save(record: dict) -> None:
              weight_kg, f"{imp:.1f}Ω" if imp else "无", member_id or "-", state)
 
     # 通知（异步，见 _notify_async）：任何称重 / 指定成员称重 / 无法确定归属，任一命中即发送
-    _notify_async(member_id, state, weight_kg, record["measured_at"].isoformat())
+    try:
+        _notify_async(member_id, state, weight_kg, record["measured_at"].isoformat())
+    except Exception:
+        # 入库已经提交，通知队列异常不能阻止向秤确认成功。
+        log.exception("提交通知失败")
 
 
 class Handler(socketserver.BaseRequestHandler):
@@ -169,15 +173,17 @@ class Handler(socketserver.BaseRequestHandler):
         if cmd in (protocol.CMD_REPORT, protocol.CMD_RECORD):
             length = plain[3]
             record = protocol.parse_record(plain)
-            # 必须先把 ACK 发回秤：_save 内含同步通知（pushplus 超时可达 16s），
-            # 任何耗时操作都不能挡在 ACK 前，否则秤等待上报确认超时、行为不可控。
+            if record is None:
+                log.warning("%s 无法保存的称重帧 %s", peer, raw.hex())
+                return
+            record["raw"] = raw.hex()
+            # 成功入库（或确认已存在）后才 ACK；失败时不确认，允许秤重试。
+            # 通知走独立线程池，不等待外部推送；连接事件放在 ACK 之后。
+            _save(record)
             ack_cmd = (protocol.CMD_REPORT_ACK if cmd == protocol.CMD_REPORT
                        else protocol.CMD_RECORD_ACK)
             sock.sendall(protocol.build_time_ack(raw, ack_cmd, length))
             _event(self._mac, "report")
-            if record:
-                record["raw"] = raw.hex()
-                _save(record)
             return
 
         # 其它命令：原样回 cmd|0x4000
